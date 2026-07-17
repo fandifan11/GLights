@@ -1,0 +1,230 @@
+--!native
+local Fixture = {}
+
+local function createSequence(brightnessXDimness: number): NumberSequence
+	return NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1 - brightnessXDimness),
+		NumberSequenceKeypoint.new(0.9, 1 - brightnessXDimness),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+end
+
+local BLACK = Color3.fromRGB(0, 0, 0)
+
+function Fixture.new(
+	lens: BasePart,
+	hasBeam: boolean,
+	hasLight: boolean,
+	hasGobo: boolean,
+	maxBrightness: number,
+	offColorSetting: string | Color3 | nil,
+	modelScale: number,
+	fadeLensTransparency: boolean,
+	changeLightAngle: boolean
+)
+	local fixture = {}
+
+	local darkenedOffColor = typeof(offColorSetting) == "string" and string.lower(offColorSetting) == "darken"
+	local offColor = if typeof(offColorSetting) == "Color3" then offColorSetting else BLACK
+	local minBrightness = if darkenedOffColor then 0.25 else 0
+	local color = Color3.fromRGB(255, 255, 255)
+	local brightness = 0
+	local dimness = 0
+	local showBeam = hasBeam
+	local showGobo = false
+	local thickness = 40
+	local thicknessMultiplier = 1
+	local textureLength = 0.99
+	local allowAngleChanges = changeLightAngle
+
+	if lens:GetAttribute("MaxBrightness") ~= nil then
+		maxBrightness = lens:GetAttribute("MaxBrightness")
+	end
+
+	local light = if hasLight then lens.Light:FindFirstChild("Light") or lens.Light else nil
+	local baseAngle = if light and (light:IsA("SpotLight") or light:IsA("SurfaceLight")) then light.Angle else 0
+
+	if light and light:IsA("PointLight") then
+		changeLightAngle = false
+		allowAngleChanges = false
+	end
+
+	local beam = if hasBeam then lens.MainBeam else nil
+	local baseBeamWidth = if beam then beam.Width1 else 0
+	local goboBeams
+	if hasGobo then
+		local beams = {}
+		for i = 1, 8 do
+			table.insert(beams, lens:FindFirstChild(`Gobo{i}`))
+		end
+		goboBeams = beams
+	end
+
+	fixture.GetBrightness = function()
+		return brightness
+	end
+
+	fixture.GetColor = function()
+		return color
+	end
+
+	fixture.ChangeBeamVisibility = function(beamVisible, goboVisible)
+		showBeam = beamVisible
+		showGobo = goboVisible
+		if beam then
+			if showBeam then
+				local brightnessXDimness = brightness * dimness
+				beam.Enabled = if brightnessXDimness == 0 then false else true
+				beam.Transparency = createSequence(brightnessXDimness)
+			else
+				beam.Enabled = false
+			end
+		end
+		if goboBeams then
+			if goboVisible then
+				local brightnessXDimness = brightness * dimness
+				local sequence = createSequence(brightnessXDimness)
+				local colorSequence = ColorSequence.new(color)
+				for _, beam in goboBeams do
+					beam.Enabled = if brightnessXDimness == 0 then false else true
+					beam.Transparency = sequence
+					beam.Color = colorSequence
+					beam.Width1 = thickness * modelScale
+				end
+			else
+				for _, beam in goboBeams do
+					beam.Enabled = false
+				end
+			end
+		end
+		if light and changeLightAngle then
+			if showGobo then
+				light.Angle = baseAngle
+			else
+				light.Angle = if allowAngleChanges
+					then (0.4 * ((thickness * thicknessMultiplier * modelScale) / baseBeamWidth) + 0.4) * baseAngle
+					else baseAngle
+			end
+		end
+	end
+
+	fixture.ChangeBeamThickness = function(newThickness)
+		thickness = newThickness
+		if beam then
+			local newWidth1 = thickness * thicknessMultiplier * modelScale
+			beam.Width1 = newWidth1
+			if light and changeLightAngle and not showGobo then
+				light.Angle = if allowAngleChanges
+					then (0.4 * (newWidth1 / baseBeamWidth) + 0.4) * baseAngle
+					else baseAngle -- 0.4 has been arbitrarily chosen
+			end
+		end
+		if hasGobo and showGobo then
+			for _, gobo in goboBeams do
+				gobo.Width1 = thickness * modelScale
+			end
+		end
+	end
+
+	fixture.ChangeBeamThicknessMultiplier = function(newMultiplier)
+		allowAngleChanges = newMultiplier == 1
+		if newMultiplier == thicknessMultiplier then
+			return
+		end
+		thicknessMultiplier = newMultiplier
+		if beam then
+			local newWidth1 = thickness * thicknessMultiplier * modelScale
+			beam.Width1 = newWidth1
+			if light and changeLightAngle and not showGobo then
+				light.Angle = if allowAngleChanges
+					then (0.4 * (newWidth1 / baseBeamWidth) + 0.4) * baseAngle
+					else baseAngle -- 0.4 has been arbitrarily chosen
+			end
+		end
+		if hasGobo and showGobo then
+			for _, gobo in goboBeams do
+				gobo.Width1 = thickness * modelScale
+			end
+		end
+	end
+
+	fixture.ChangeTextureLength = function(newLength)
+		if textureLength == newLength then
+			return
+		end
+		textureLength = newLength
+		beam.TextureLength = newLength
+	end
+
+	fixture.ChangeColor = function(_color)
+		color = _color
+		local c = if fadeLensTransparency
+			then color
+			else offColor:Lerp(color, math.max(minBrightness, math.sqrt(brightness * dimness)))
+		lens.Color = c
+		if light then
+			light.Color = _color
+		end
+		local sequence = ColorSequence.new(_color)
+		if hasBeam then
+			beam.Color = sequence
+		end
+		if hasGobo and showGobo then
+			for _, gobo in goboBeams do
+				gobo.Color = sequence
+			end
+		end
+	end
+
+	fixture.ChangeBrightness = function(_brightness)
+		brightness = _brightness
+		local brightnessXDimness = brightness * dimness
+		if fadeLensTransparency then
+			lens.Transparency = 1 - brightnessXDimness
+		else
+			local c = offColor:Lerp(color, math.max(minBrightness, math.sqrt(brightnessXDimness)))
+			lens.Color = c
+		end
+		if light then
+			light.Brightness = brightnessXDimness * maxBrightness
+		end
+		if showBeam then
+			beam.Transparency = createSequence(brightnessXDimness)
+			beam.Enabled = if brightnessXDimness == 0 then false else true
+		end
+		if showGobo then
+			for _, gobo in goboBeams do
+				gobo.Transparency = createSequence(brightnessXDimness)
+				gobo.Enabled = if brightnessXDimness == 0 then false else true
+			end
+		end
+	end
+
+	fixture.ChangeDimness = function(_dimness)
+		dimness = _dimness
+		local brightnessXDimness = brightness * dimness
+		if fadeLensTransparency then
+			lens.Transparency = 1 - brightnessXDimness
+		else
+			local c = offColor:Lerp(color, math.max(minBrightness, math.sqrt(brightnessXDimness)))
+			lens.Color = c
+		end
+		if light then
+			light.Brightness = brightnessXDimness * maxBrightness
+		end
+		if showBeam then
+			beam.Transparency = createSequence(brightnessXDimness)
+			beam.Enabled = if brightnessXDimness == 0 then false else true
+		end
+		if showGobo then
+			for _, gobo in goboBeams do
+				gobo.Transparency = createSequence(brightnessXDimness)
+				gobo.Enabled = if brightnessXDimness == 0 then false else true
+			end
+		end
+	end
+
+	return fixture
+end
+
+return Fixture

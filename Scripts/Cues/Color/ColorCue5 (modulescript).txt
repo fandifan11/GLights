@@ -1,0 +1,71 @@
+local Cue = {}
+Cue.OnDisable = "ResetColor"
+
+local rng = Random.new()
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local state = Changer.State
+	local shouldStopLooping = false
+	local fixtures = Changer.Indexer:Get("All", executionSettings.lensGroup)
+	local enabled = {}
+
+	local function off(light)
+		if shouldStopLooping then
+			return
+		end
+		Changer:ResetColorState({ light })
+		enabled[light] = false
+	end
+
+	local function on(light)
+		if shouldStopLooping then
+			return
+		end
+		Changer:CueColor(globalCueSettings.SecondaryColor, { light })
+		task.delay(
+			if state.SmoothColor
+				then rng:NextNumber(Settings.FadeTime, Settings.FadeTime + 0.3) * state.CueSpeed
+				else rng:NextNumber(0.1, 0.3) * state.CueSpeed,
+			off,
+			light
+		)
+	end
+
+	local function run()
+		for _, fixtureId in fixtures do
+			if enabled[fixtureId] then
+				continue
+			end
+			enabled[fixtureId] = true
+			task.delay(
+				if state.SmoothColor
+					then rng:NextNumber(Settings.FadeTime, Settings.FadeTime + 0.3) * state.CueSpeed
+					else rng:NextNumber(0.1, 0.3) * state.CueSpeed,
+				on,
+				fixtureId
+			)
+		end
+	end
+
+	task.spawn(function()
+		if runOnce then
+			run()
+			task.wait(0.6 * state.CueSpeed) -- 0.3 * 2
+		else
+			repeat
+				run()
+				task.wait(0.05)
+				if shouldStopLooping and globalCueSettings.KillCues then
+					return
+				end
+			until shouldStopLooping
+		end
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopLooping = true
+	end
+end
+
+return Cue

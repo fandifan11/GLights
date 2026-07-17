@@ -1,0 +1,29 @@
+local Action = {}
+Action.IsPhysicsAction = true
+
+local function getPan(groupNumber, numberCount, reverse)
+	if reverse then
+		groupNumber = numberCount - groupNumber + 1
+	end
+	local percent = (groupNumber - 1) / (numberCount - 1)
+	local angle = percent * 120 - 60
+	return angle
+end
+
+function Action.Client(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixtures = Changer.Indexer.Motors.Numbered
+	Changer:Tilt(50)
+	for groupNumber, fixtureIds in fixtures do
+		Changer:Pan(getPan(groupNumber, #fixtures, reverse), fixtureIds)
+	end
+end
+
+function Action.Server(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixtures = Changer.Indexer.Motors.Numbered
+	Changer:MarkTilt(50, Changer.Indexer.Motors.All)
+	for groupNumber, fixtureIds in fixtures do
+		Changer:MarkPan(getPan(groupNumber, #fixtures, reverse), fixtureIds)
+	end
+end
+
+return Action

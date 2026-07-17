@@ -1,0 +1,66 @@
+local Cue = {}
+Cue.OnDisable = "FadeResetOnOff"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local fixtures = Changer.Indexer:Get("Numbered", executionSettings.lensGroup)
+	local numbers = Changer.Indexer:GetTotalNumberCount(executionSettings.lensGroup)
+	local shouldStopRunning = false
+	local state = Changer.State
+	local middle = math.ceil(numbers / 2)
+	local baseWaitTime = 0.4 * Settings.FadeTime
+
+	task.spawn(function()
+		repeat
+			for offset = 1, middle do
+				if shouldStopRunning then
+					break
+				end
+				local i = offset
+				local i2 = numbers - offset + 1
+
+				if fixtures[i] then
+					Changer:CueFadeOn(fixtures[i])
+				end
+				if fixtures[i2] then
+					Changer:CueFadeOn(fixtures[i2])
+				end
+				task.wait(baseWaitTime / state.FadeSpeed * state.CueSpeed)
+				if shouldStopRunning and globalCueSettings.KillCues then
+					return
+				end
+			end
+			task.wait(0.5 * state.CueSpeed)
+
+			for offset = 1, middle do
+				if shouldStopRunning then
+					break
+				end
+				local i = offset
+				local i2 = numbers - offset + 1
+
+				if fixtures[i] then
+					Changer:CueFadeOff(fixtures[i])
+				end
+				if fixtures[i2] then
+					Changer:CueFadeOff(fixtures[i2])
+				end
+				task.wait(baseWaitTime / state.FadeSpeed * state.CueSpeed)
+				if shouldStopRunning and globalCueSettings.KillCues then
+					return
+				end
+			end
+			task.wait(0.5 * state.CueSpeed)
+
+			if runOnce then
+				shouldStopRunning = true
+			end
+		until shouldStopRunning
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

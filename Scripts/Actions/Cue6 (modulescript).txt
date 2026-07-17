@@ -1,0 +1,37 @@
+local Action = {}
+Action.ForcesOnOff = false
+
+function Action.Client(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixtures = Changer.Indexer:Get("Numbered", executionSettings.lensGroup)
+	local numbers = Changer.Indexer:GetTotalNumberCount(executionSettings.lensGroup)
+	local state = Changer.State
+	local middle = math.ceil(numbers / 2)
+	local baseWaitTime = 0.4 * Settings.FadeTime
+
+	Changer:CueOn(Changer.Indexer:Get("All", executionSettings.lensGroup))
+
+	for offset = 1, middle do
+		local i, i2
+		if reverse then
+			i = middle - offset + 1
+			i2 = middle + offset
+		else
+			i = offset
+			i2 = numbers - offset + 1
+		end
+
+		if fixtures[i] then
+			Changer:FadeOff(i)
+		end
+		if fixtures[i2] then
+			Changer:FadeOff(i2)
+		end
+		task.wait(baseWaitTime / state.FadeSpeed * state.CueSpeed)
+	end
+end
+
+function Action.Server(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	Changer:MarkOff(Changer.Indexer:Get("All", executionSettings.lensGroup))
+end
+
+return Action

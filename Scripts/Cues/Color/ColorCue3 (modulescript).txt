@@ -1,0 +1,45 @@
+local Cue = {}
+Cue.OnDisable = "ResetColor"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local fixtures = Changer.Indexer:Get("Numbered", executionSettings.lensGroup)
+	local numbers = Changer.Indexer:GetTotalNumberCount(executionSettings.lensGroup)
+	local iterations = math.ceil(numbers / 2)
+	local shouldStopRunning = false
+	local state = Changer.State
+
+	task.spawn(function()
+		repeat
+			local visible = 1
+			for _ = 1, iterations do
+				if shouldStopRunning then
+					break
+				end
+				for group, fixtureIds in fixtures do
+					if group == visible or group == visible + 1 then
+						Changer:CueColor(globalCueSettings.SecondaryColor, fixtureIds)
+					else
+						Changer:ResetColorState(fixtureIds)
+					end
+				end
+				visible += 2
+				task.wait(if state.SmoothColor then Settings.FadeTime * state.CueSpeed else 0.5 * state.CueSpeed)
+				if shouldStopRunning and globalCueSettings.KillCues then
+					return
+				end
+			end
+
+			if runOnce then
+				shouldStopRunning = true
+			end
+			task.wait()
+		until shouldStopRunning
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

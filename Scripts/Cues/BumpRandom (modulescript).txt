@@ -1,0 +1,93 @@
+local Cue = {}
+Cue.OnDisable = "FadeResetOnOff"
+Cue._GroupOffsets = {}
+
+local rng = Random.new()
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local state = Changer.State
+	local shouldStopLooping = false
+	local fixtures = Changer.Indexer:Get("All", executionSettings.lensGroup)
+	local numbered = Changer.Indexer:Get("Numbered", executionSettings.lensGroup)
+	local enabled = {}
+	local enabledGroups = {}
+	local maxWait = 0.6 * 3
+	for group, _ in numbered do
+		if not Cue._GroupOffsets[group] then
+			Cue._GroupOffsets[group] = rng:NextNumber(0.3, maxWait)
+		end
+	end
+
+	local function off(light)
+		enabled[light] = false
+	end
+
+	local function offGroup(group)
+		enabledGroups[group] = false
+	end
+
+	local function on(light)
+		if shouldStopLooping then
+			return
+		end
+		Changer:CueOn({ light })
+		Changer:CueFadeOff({ light })
+		task.delay(Settings.FadeTime / state.FadeSpeed, off, light)
+	end
+
+	local function onGroup(lights, group)
+		if shouldStopLooping then
+			return
+		end
+		Changer:CueOn(lights)
+		Changer:CueFadeOff(lights)
+		task.delay(Settings.FadeTime / state.FadeSpeed, offGroup, group)
+	end
+
+	local function run()
+		if globalCueSettings.GroupRandom then
+			for group, fixtureIds in numbered do
+				if enabledGroups[group] then
+					continue
+				end
+				enabledGroups[group] = true
+				if maxWait == 0.6 then
+					task.delay((Cue._GroupOffsets[group] / 3) * state.CueSpeed, onGroup, fixtureIds, group)
+				else
+					task.delay(Cue._GroupOffsets[group] * state.CueSpeed, onGroup, fixtureIds, group)
+				end
+			end
+		else
+			for _, fixtureId in fixtures do
+				if enabled[fixtureId] then
+					continue
+				end
+				enabled[fixtureId] = true
+				task.delay(rng:NextNumber(0.3, maxWait) * state.CueSpeed, on, fixtureId)
+			end
+		end
+	end
+
+	task.spawn(function()
+		if runOnce then
+			run()
+			task.wait(maxWait * state.CueSpeed + Settings.FadeTime / state.FadeSpeed)
+		else
+			repeat
+				run()
+				maxWait = 0.6
+				task.wait(0.05)
+				if shouldStopLooping and globalCueSettings.KillCues then
+					return
+				end
+			until shouldStopLooping
+		end
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopLooping = true
+	end
+end
+
+return Cue

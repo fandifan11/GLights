@@ -1,0 +1,29 @@
+return {
+	-- A list of who should be able to control the lights
+	-- You can use:
+	-- - usernames, for example: "gabys2005"
+	-- - user ids, for example: 147274250
+	-- - group ranks, for example: { Group = 32780278, Ranks = { "Staff", "Owner" } }
+	-- - gamepasses, for example: { Gamepass = 14143793 }
+	-- - teams, for example: game.Teams.controllers
+	-- - to allow private server owners, use "PrivateServerOwner"
+	-- - to allow private server players, use "PrivateServerPlayer"
+	-- The whitelist is disabled by default, set `Enabled = true,` to enable the whitelist
+	-- Each entry should be separated by a comma (,)
+	-- For example, a whitelist could look like this:
+	-- 		Whitelist = {
+	--			Enabled = true,
+	--			List = { "gabys2005", "idezye", { Group = 32780278, Ranks = { "Staff", "Owner" } }
+	--		},
+	Whitelist = {
+		Enabled = false,
+		List = {},
+	},
+
+	-- Whether or not the lights should check for possible updates
+	-- You need to enable HTTP requests for the lights to be able to check for updates
+	CheckForUpdates = true,
+
+	-- Whether lights should fade off or turn off when they're being reset
+	FadeReset = false,
+}

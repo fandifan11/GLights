@@ -1,0 +1,64 @@
+local mainFolder = script.Parent.Parent.Parent
+local followPointsFolder = mainFolder.FollowPoints
+local lightsFolder = mainFolder.Lights
+
+local Panel = require(script.Parent.Panel)
+local FollowPointManager = require(script.Parent.FollowPointManager)
+local ResetButton = require(script.Parent.ResetButton)
+
+local function setGlobalID()
+	if _G.GLightsPanelsCount then
+		_G.GLightsPanelsCount += 1
+	else
+		_G.GLightsPanelsCount = 1
+	end
+	script.Parent.ID.Value = _G.GLightsPanelsCount
+end
+
+local function initFollowPoints()
+	for _, thing in followPointsFolder:GetChildren() do
+		if thing:IsA("Part") then
+			thing.Transparency = 1
+			FollowPointManager.AddPart(thing)
+		elseif thing:IsA("ObjectValue") then
+			FollowPointManager.AddValue(thing)
+		end
+	end
+	followPointsFolder.ChildAdded:Connect(function(thing)
+		if thing:IsA("Part") then
+			thing.Transparency = 1
+			FollowPointManager.AddPart(thing)
+		elseif thing:IsA("ObjectValue") and string.sub(thing.Name, 1, 1) ~= "_" then
+			FollowPointManager.AddValue(thing)
+		end
+	end)
+	followPointsFolder.ChildRemoved:Connect(function(thing)
+		if thing:IsA("Part") then
+			FollowPointManager.RemovePart(thing)
+		elseif thing:IsA("ObjectValue") and string.sub(thing.Name, 1, 1) ~= "_" then
+			FollowPointManager.RemoveValue(thing)
+		end
+	end)
+end
+
+local function initPanels()
+	for _, folder in lightsFolder:GetChildren() do
+		if not folder:IsA("Folder") or not folder:FindFirstChild("Panel") then
+			continue
+		end
+		task.spawn(Panel.new, folder)
+	end
+end
+
+local function initResetButtons()
+	ResetButton.Init()
+end
+
+local function init()
+	setGlobalID()
+	initFollowPoints()
+	initPanels()
+	initResetButtons()
+end
+
+init()

@@ -1,0 +1,144 @@
+return {
+
+	-- The model used by the lights controlled by this panel
+	-- By default you can use: "Head", "Wash", "Bar", "LineBar", "Strobe", "LED"
+	BaseModel = "Head",
+
+	-- The settings below control what gets added to the light models
+	-- Setting each setting to true will make the game slightly more laggy
+	AddBeams = true,
+	AddMotors = true,
+	AddLight = true,
+	AddGobo = true,
+
+	-- Whether or not the lights should cast shadows
+	-- Shadows are laggy, so you should only set this to true on lights
+	-- that are close to the stage
+	CastShadow = true,
+
+	-- A list of who should be able to control this set of lights, overrides the main whitelist
+	-- You can use:
+	-- - usernames, for example: "gabys2005"
+	-- - user ids, for example: 147274250
+	-- - group ranks, for example: { Group = 32780278, Ranks = { "Staff", "Owner" } }
+	-- - gamepasses, for example: { Gamepass = 14143793 }
+	-- - teams, for example: game.Teams.controllers
+	-- - to allow private server owners, use "PrivateServerOwner"
+	-- - to allow private server players, use "PrivateServerPlayer"
+	-- The whitelist is disabled by default, set `Enabled = true,` to enable the whitelist
+	-- Each entry should be separated by a comma (,)
+	-- For example, a whitelist could look like this:
+	-- 		Whitelist = {
+	--			Enabled = true,
+	--			List = { "gabys2005", "idezye", { Group = 32780278, Ranks = { "Staff", "Owner" } }
+	--		},
+	-- Uncomment the lines below (remove the --) to enable the whitelist
+	--Whitelist = {
+	--	Enabled = true,
+	--	List = {},
+	--},
+
+	-- An override to how bright the lights will be
+	-- Uncomment the line below (remove the --) to enable the override
+	--MaxBrightness = 3,
+
+	-- How far the light sources should reach
+	-- A higher range can negatively impact performance
+	-- Uncomment the line below (remove the --) to enable this setting
+	--LightRange = 120,
+
+	-- An override to how long the beams are
+	-- Uncomment the line below (remove the --) to enable the override
+	--BeamLength = 230,
+
+	-- Whether or not the lights should do all of their actions on the client side
+	-- It's recommended to keep this setting enabled
+	ClientSided = true,
+
+	-- If the above setting is true, whether or not physics should run on the server instead
+	-- SET THIS TO true ON LIGHTS ATTACHED TO MOVING TRUSSES
+	ServerPhysics = false,
+
+	-- How long (in seconds) it takes to fade the lights on/off or between colors
+	FadeTime = 0.5,
+
+	-- How many times a second fading should update
+	-- Lower this number if you're having problems with performance
+	FadeFPS = 40,
+
+	-- How many times a second the lights should flash when the Strobe cue is enabled
+	StrobeRate = 10,
+
+	-- EXPERIMENTAL, might change in the future
+	-- When enabled, the light source will attempt to match its angle to the beam
+	-- Works best with Realistic lighting. Might affect performance.
+	MatchAngle = false,
+
+	-- If set to true, the transparency of lenses will be changed when turning on/off
+	-- and fading instead of their colour
+	UseLensTransparency = false,
+
+	-- The lights will turn this color when they're off
+	-- This setting is used only when UseLensTransparency is set to false
+	-- You can set this setting to "Darken" to make the lens darker when the light is off
+	OffColor = Color3.fromRGB(0, 0, 0),
+
+	-- Whether lights should fade off or turn off when they're being reset
+	-- Uncomment (remove the --) to override the global setting for this panel
+	--FadeReset = false,
+
+	-- When set to "FadeSpeed", fade speed will be used for gradient colour speed
+	-- When set to "CueSpeed", cue speed will be used for gradient colour speed
+	GradientSpeed = "FadeSpeed",
+
+	-- A list of keybinds, check the docs for more details
+	Keybinds = {
+
+	},
+
+	-- This setting is used to apply default state to lights connected to this panel
+	-- Check the docs for more details
+	DefaultState = {
+		On = {},
+
+		Color = {
+			["White"] = { "All" },
+		},
+		SecondaryColor = "White",
+
+		EnabledCues = {},
+		Actions = {
+			
+		},
+		CueSettings = {
+			["State.Cue3"] = {
+				Groups = 2,
+			},
+		},
+
+		Brightness = 1,
+		CueSpeed = 1,
+		FadeSpeed = 1,
+
+		GoboRotate = false,
+		SmoothColor = false,
+		AnimatedGradients = false,
+		LoopCues = true,
+		GroupRandom = false,
+		Overshoot = false,
+		KillCues = false,
+
+		Tilt = {
+			[0] = { "All" },
+		},
+		Pan = {
+			[0] = { "All" },
+		},
+		MotorSpeed = "M",
+		Follow = nil,
+
+		BeamMode = "Beam",
+		BeamThickness = 1,
+		GoboSpread = 1,
+	},
+}

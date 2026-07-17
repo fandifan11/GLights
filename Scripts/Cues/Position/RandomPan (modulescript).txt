@@ -1,0 +1,71 @@
+local Cue = {}
+Cue.OnDisable = "ResetPan"
+Cue.IsPhysicsCue = true
+Cue._GroupOffsets = {}
+
+local rng = Random.new()
+
+function Cue.Enable(Changer, Settings, shouldRunOnce, cueName, globalCueSettings)
+	local shouldStopLooping = shouldRunOnce
+	local fixtures = Changer.Indexer.Motors.All
+	local numbered = Changer.Indexer.Motors.Numbered
+	for group, _ in numbered do
+		if not Cue._GroupOffsets[group] then
+			Cue._GroupOffsets[group] = rng:NextNumber(0, 1)
+		end
+	end
+
+	local randomTimeOffsets = {}
+	for _, id in fixtures do
+		randomTimeOffsets[id] = rng:NextNumber(0, 1)
+	end
+
+	local function pan(lights, degrees)
+		if shouldStopLooping then
+			return
+		end
+		Changer:CuePan(degrees, lights)
+	end
+
+	task.spawn(function()
+		repeat
+			if globalCueSettings.GroupRandom then
+				for group, fixtureIds in numbered do
+					task.delay(Cue._GroupOffsets[group], pan, fixtureIds, 30)
+				end
+			else
+				for _, fixtureId in fixtures do
+					task.delay(randomTimeOffsets[fixtureId], pan, { fixtureId }, 30)
+				end
+			end
+			task.wait(1.2)
+			if shouldStopLooping then
+				if globalCueSettings.KillCues then
+					return
+				else
+					break
+				end
+			end
+			if globalCueSettings.GroupRandom then
+				for group, fixtureIds in numbered do
+					task.delay(Cue._GroupOffsets[group], pan, fixtureIds, -30)
+				end
+			else
+				for _, fixtureId in fixtures do
+					task.delay(randomTimeOffsets[fixtureId], pan, { fixtureId }, -30)
+				end
+			end
+			task.wait(1.2)
+			if shouldStopLooping and globalCueSettings.KillCues then
+				return
+			end
+		until shouldStopLooping
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopLooping = true
+	end
+end
+
+return Cue

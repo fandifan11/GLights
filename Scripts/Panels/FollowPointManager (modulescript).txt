@@ -1,0 +1,46 @@
+local FollowPointManager = {}
+FollowPointManager._ByID = {}
+FollowPointManager._ByPart = {}
+FollowPointManager._ID = 1
+
+local followPointsFolder = script.Parent.Parent.Parent.FollowPoints
+
+function FollowPointManager.AddPart(part: Part)
+	local value = Instance.new("ObjectValue")
+	value.Name = `_{part.Name}`
+	value:SetAttribute("Name", part.Name)
+	part:SetAttribute("ID", FollowPointManager._ID)
+	value:SetAttribute("ID", FollowPointManager._ID)
+	value.Value = part
+	value.Parent = followPointsFolder
+	FollowPointManager._ByID[FollowPointManager._ID] = value
+	FollowPointManager._ByPart[part] = value
+	FollowPointManager._ID += 1
+end
+
+function FollowPointManager.AddValue(value: ObjectValue)
+	value:SetAttribute("Name", value.Name)
+	value:SetAttribute("ID", FollowPointManager._ID)
+	FollowPointManager._ByID[FollowPointManager._ID] = value
+	FollowPointManager._ID += 1
+end
+
+function FollowPointManager.RemovePart(part: Part)
+	local value = FollowPointManager._ByPart[part]
+	local id = part:GetAttribute("ID")
+	value:Destroy()
+	FollowPointManager._ByPart[part] = nil
+	FollowPointManager._ByID[id] = nil
+end
+
+function FollowPointManager.RemoveValue(value: ObjectValue)
+	local id = value:GetAttribute("ID")
+	value:Destroy()
+	FollowPointManager._ByID[id] = nil
+end
+
+function FollowPointManager.Get(id: number)
+	return FollowPointManager._ByID[id].Value
+end
+
+return FollowPointManager

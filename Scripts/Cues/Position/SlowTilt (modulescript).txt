@@ -1,0 +1,30 @@
+local Cue = {}
+Cue.OnDisable = "ResetTilt"
+Cue.IsPhysicsCue = true
+
+function Cue.Enable(Changer, Settings, shouldRunOnce, cueName, globalCueSettings)
+	local shouldStopLooping = shouldRunOnce
+	local fixtures = Changer.Indexer.Motors.All
+
+	task.spawn(function()
+		repeat
+			for _, fixtureId in fixtures do
+				Changer:CueTilt(
+					if globalCueSettings.Overshoot then math.random(-50, 50) else math.random(-20, 80),
+					{ fixtureId }
+				)
+			end
+			task.wait(5)
+			if shouldStopLooping and globalCueSettings.KillCues then
+				return
+			end
+		until shouldStopLooping
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopLooping = true
+	end
+end
+
+return Cue

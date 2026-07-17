@@ -1,0 +1,44 @@
+local Cue = {}
+Cue.IsPhysicsCue = true
+Cue.OnDisable = "ResetTilt"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings)
+	local fixtures = Changer.Indexer.Motors.Numbered
+	local numbers = Changer.Indexer.Motors.TotalNumberCount
+	local shouldStopRunning = false
+	local state = Changer.State
+
+	task.spawn(function()
+		repeat
+			for i = 1, numbers do
+				if shouldStopRunning then
+					break
+				end
+				Changer:CueTilt(if globalCueSettings.Overshoot then -40 else 90, fixtures[i])
+				task.wait((if globalCueSettings.Overshoot then 0.5 else 0.2) * state.CueSpeed)
+			end
+			for i = 1, numbers do
+				if shouldStopRunning then
+					break
+				end
+				Changer:CueTilt(if globalCueSettings.Overshoot then 40 else 25, fixtures[i])
+				task.wait((if globalCueSettings.Overshoot then 0.5 else 0.2) * state.CueSpeed)
+			end
+
+			if runOnce then
+				shouldStopRunning = true
+			end
+			if shouldStopRunning and globalCueSettings.KillCues then
+				return
+			end
+			task.wait()
+		until shouldStopRunning
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

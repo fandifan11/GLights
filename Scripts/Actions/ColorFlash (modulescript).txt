@@ -1,0 +1,11 @@
+local Action = {}
+
+function Action.Client(Changer, Settings, globalCueSettings, executionSettings)
+	local fixtures = Changer.Indexer:Get("All", executionSettings.lensGroup)
+	Changer:CueColor(globalCueSettings.SecondaryColor, fixtures, false)
+	Changer:ResetColorState(fixtures, true)
+end
+
+function Action.Server(Changer, Settings) end
+
+return Action

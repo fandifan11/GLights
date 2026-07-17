@@ -1,0 +1,41 @@
+local TemplateManager = {}
+TemplateManager._AllTemplates = {}
+local defaultTemplatesFolder = script.Parent.Parent.ModelTemplates
+local customTemplatesFolder = script.Parent.Parent.Parent.Custom.ModelTemplates
+
+local function handleFolder(folder, baseName)
+	for _, moduleScript in folder:GetChildren() do
+		if moduleScript:IsA("ModuleScript") then
+			local success, content = pcall(require, moduleScript)
+			local toSave = if success then content else "error"
+			TemplateManager._AllTemplates[`{baseName}{moduleScript.Name}`] = toSave
+		else
+			handleFolder(moduleScript, `{moduleScript.Name}.`)
+		end
+	end
+end
+handleFolder(defaultTemplatesFolder, "")
+handleFolder(customTemplatesFolder, "")
+
+function TemplateManager.GetTemplate(name)
+	local template = TemplateManager._AllTemplates[name]
+	if not template then
+		return
+	end
+	if template.Inherit then
+		local base = TemplateManager._AllTemplates[template.Inherit]
+		if base then
+			local copy = table.clone(base)
+			for i, v in template do
+				copy[i] = v
+			end
+			return copy
+		else
+			return
+		end
+	else
+		return template
+	end
+end
+
+return TemplateManager

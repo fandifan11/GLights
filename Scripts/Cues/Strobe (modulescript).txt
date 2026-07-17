@@ -1,0 +1,36 @@
+local Cue = {}
+Cue.OnDisable = "ResetOnOff"
+
+function Cue.Enable(Changer, Settings, shouldRunOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local state = Changer.State
+	local waitTime = 1 / Settings.StrobeRate / 2
+	local shouldStopLooping = shouldRunOnce
+	local fixtures = Changer.Indexer:Get("All", executionSettings.lensGroup)
+
+	task.spawn(function()
+		repeat
+			Changer:CueOn(fixtures)
+			task.wait(waitTime * state.CueSpeed)
+			if shouldStopLooping then
+				if globalCueSettings.KillCues then
+					return
+				else
+					break
+				end
+			end
+
+			Changer:CueOff(fixtures)
+			task.wait(waitTime * state.CueSpeed)
+			if shouldStopLooping and globalCueSettings.KillCues then
+				return
+			end
+		until shouldStopLooping
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopLooping = true
+	end
+end
+
+return Cue

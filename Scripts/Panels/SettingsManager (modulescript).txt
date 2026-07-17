@@ -1,0 +1,78 @@
+local SettingsManager = {}
+
+local TemplateManager = require(script.Parent.Parent.Core.TemplateManager)
+
+local settingsToReplace = {
+	ClientSided = true,
+	--ServerPhysics = false,
+	FadeTime = 0.5,
+	FadeFPS = 40,
+	StrobeRate = 10,
+	BaseModel = "",
+}
+
+function SettingsManager.getWhitelist(whitelistSetting)
+	if whitelistSetting.Enabled ~= nil then
+		return whitelistSetting
+	elseif #whitelistSetting == 0 then
+		return {
+			Enabled = false,
+			List = {},
+		}
+	else
+		return {
+			Enabled = true,
+			List = whitelistSetting,
+		}
+	end
+end
+
+function SettingsManager.VerifySettings(Settings, folder)
+	local warnings = {}
+
+	if Settings.BaseModel == nil then
+		return "error",
+			"The 'BaseModel' setting is missing. It's required.",
+			`[[ GLights ]]: {folder} is missing the 'BaseModel' setting. It's required`
+	end
+
+	local template = TemplateManager.GetTemplate(Settings.BaseModel)
+	if template == nil then
+		return "error",
+			`There's no model template named '{Settings.BaseModel}' (the 'BaseModel' setting is incorrect)`,
+			`{folder} tried loading model template '{Settings.BaseModel}' but it doesn't exist`
+	elseif template == "error" then
+		return "error",
+			`The '{Settings.BaseModel}' model template couldn't be loaded, there's something wrong with its script`,
+			`{folder} couldn't load the '{Settings.BaseModel}' model template`
+	else
+		if template.CanHaveMotors and Settings.AddMotors and Settings.ServerPhysics == nil then
+			table.insert(warnings, "'ServerPhysics' is missing. Motors might not work")
+		end
+	end
+
+	for settingName, defaultValue in settingsToReplace do
+		if Settings[settingName] == nil then
+			warn(
+				"[[ GLights ]]:",
+				folder,
+				`is missing a '{settingName}' setting. A default value ({defaultValue}) will be used instead`
+			)
+			Settings[settingName] = defaultValue
+			table.insert(warnings, `{settingName} is missing`)
+		elseif typeof(Settings[settingName]) ~= typeof(defaultValue) then
+			return "error",
+				`The '{settingName}' setting should be a {typeof(defaultValue)} but is a {typeof(Settings[settingName])}`,
+				`The '{settingName}' setting has a wrong type, it should be a {typeof(defaultValue)} but is a {typeof(
+					Settings[settingName]
+				)}`
+		end
+	end
+
+	if #warnings > 0 then
+		return "warning", warnings
+	end
+	return
+end
+
+return SettingsManager

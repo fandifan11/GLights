@@ -1,0 +1,900 @@
+--!strict
+
+local ButtonHandler = {}
+ButtonHandler.__index = ButtonHandler
+ButtonHandler._InstanceByPanel = {}
+ButtonHandler.IsMobileView = false
+-- ButtonHandler._KeybindConnectionsByPanelInstance = {}
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local ActionCodes = require(script.Parent.ActionCodes)
+local GetButtons = require(script.Parent.GetButtons)
+local Slider = require(script.Parent.Slider)
+local ColorPicker = require(script.Parent.ColorPicker)
+local sendEvent = script.Parent.Events.RunAction
+local followPointsFolder = script.Parent.Parent.Parent.FollowPoints
+
+local SELECTED_COLOR = Color3.fromRGB(0, 85, 255)
+local DESELECTED_COLOR = Color3.fromRGB(64, 64, 89)
+
+local keybindsByPanelInstance: { [Instance]: { RBXScriptConnection } } = {}
+
+type ButtonHandler = typeof(setmetatable(
+	{} :: {
+		Panel: Instance,
+		Connections: { [any]: RBXScriptConnection },
+		Keybinds: { MappedKeybind },
+		KeysToListenFor: { [Enum.KeyCode]: true },
+		Sliders: { any },
+		Buttons: any,
+		LocalComboMode: string,
+		NegativeTilt: boolean,
+		NegativePan: boolean,
+		Picker: any,
+	},
+	ButtonHandler
+))
+
+local function getEnumItemByName(enum: Enum, name: string)
+	for _, item: EnumItem in enum:GetEnumItems() do
+		if string.lower(item.Name) == string.lower(name) then
+			return item
+		end
+	end
+	return nil
+end
+
+local function mapKeybinds(keybinds: { Keybind }): { MappedKeybind }
+	local mapped: { MappedKeybind } = {}
+	for _, bind in keybinds do
+		local newBind: MappedKeybind = {
+			Action = bind.Action,
+			Keys = bind.Keys,
+			Value = bind.Value,
+			Mapped = {},
+			Active = false,
+		}
+		for _, key in bind.Keys do
+			if typeof(key) == "string" then
+				local item = getEnumItemByName(Enum.KeyCode, key)
+				if item then
+					newBind.Mapped[item] = true
+				end
+			elseif typeof(key) == "EnumItem" then
+				newBind.Mapped[key] = true
+			end
+		end
+		table.insert(mapped, newBind)
+	end
+	return mapped
+end
+
+type MappedKeybind = Keybind & { Mapped: { [Enum.KeyCode]: true }, Active: boolean }
+
+type Keybind = {
+	Action: string,
+	Value: any,
+	Keys: { Enum.KeyCode | string },
+}
+
+function ButtonHandler.new(panel: Instance, keybinds: { Keybind }): ButtonHandler
+	local self = setmetatable({}, ButtonHandler)
+	self.Panel = panel
+	self.Keybinds = mapKeybinds(keybinds)
+	self.Connections = {}
+	self.KeysToListenFor = {}
+	self.Sliders = {}
+	self.Buttons = GetButtons.Get(panel)
+	self.LocalComboMode = "A"
+	self.NegativeTilt = false
+	self.NegativePan = false
+	self._InstanceByPanel[panel] = self
+	self.Picker = nil
+	self:ConnectButtons()
+	self:ConnectKeybinds()
+
+	return self
+end
+
+function ButtonHandler.GetByPanel(panel)
+	return ButtonHandler._InstanceByPanel[panel]
+end
+
+function ButtonHandler.ConnectButtons(self: ButtonHandler)
+	for button, color in self.Buttons.ColorButtons do
+		self:LeftClick(button, function()
+			if self.LocalComboMode == "A" then
+				self:Send(ActionCodes.LEFT_CLICK_COLOR, color)
+			else
+				self:Send(ActionCodes.RIGHT_CLICK_COLOR, color)
+			end
+		end)
+		self:RightClick(button, function()
+			self:Send(ActionCodes.RIGHT_CLICK_COLOR, color)
+		end)
+	end
+
+	self:LeftClick(self.Buttons.ColorModeButtons.All, function()
+		self:Send(ActionCodes.COLOR_MODE, "All")
+	end)
+	self:LeftClick(self.Buttons.ColorModeButtons.Combo, function()
+		self:Send(ActionCodes.COLOR_MODE, "Combo")
+	end)
+	self:LeftClick(self.Buttons.ColorModeButtons.ComboA, function()
+		self:Send(ActionCodes.COLOR_MODE, "Combo")
+		self.LocalComboMode = "A"
+	end)
+	self:LeftClick(self.Buttons.ColorModeButtons.ComboB, function()
+		self:Send(ActionCodes.COLOR_MODE, "Combo")
+		self.LocalComboMode = "B"
+	end)
+	self:LeftClick(self.Buttons.ColorModeButtons.Secondary, function()
+		self:Send(ActionCodes.COLOR_MODE, "Secondary")
+	end)
+	self:LeftClick(self.Buttons.ColorModeButtons.Switch, function()
+		self:Send(ActionCodes.SWITCH_COLORS)
+	end)
+
+	self:Toggle(self.Buttons.ModifierButtons.SmoothColor, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_SMOOTH_COLOR)
+		else
+			self:Send(ActionCodes.SMOOTH_COLOR, enabled)
+		end
+	end)
+
+	for core, button in self.Buttons.CoreButtons do
+		self:Toggle(button, function()
+			self:Send(ActionCodes.TOGGLE_CORE, core)
+		end)
+	end
+
+	self:Toggle(self.Buttons.StateButtons.OnOff, function(enabled)
+		if enabled then
+			self:Send(ActionCodes.ON)
+		else
+			self:Send(ActionCodes.OFF)
+		end
+	end)
+	self:Toggle(self.Buttons.StateButtons.FadeOnOff, function(enabled)
+		if enabled then
+			self:Send(ActionCodes.FADE_ON)
+		else
+			self:Send(ActionCodes.FADE_OFF)
+		end
+	end)
+
+	self:LeftClick(self.Buttons.StateButtons.On, function()
+		self:Send(ActionCodes.ON)
+	end)
+	self:LeftClick(self.Buttons.StateButtons.Off, function()
+		self:Send(ActionCodes.OFF)
+	end)
+	self:LeftClick(self.Buttons.StateButtons.FadeOn, function()
+		self:Send(ActionCodes.FADE_ON)
+	end)
+	self:LeftClick(self.Buttons.StateButtons.FadeOff, function()
+		self:Send(ActionCodes.FADE_OFF)
+	end)
+
+	for cueName, button in self.Buttons.CueButtons do
+		self:LeftClick(button, function()
+			if ButtonHandler.IsMobileView then
+				self:Send(ActionCodes.TOGGLE_CUE, cueName)
+			else
+				self:Send(ActionCodes.CUE, cueName, true)
+			end
+		end)
+		self:RightClick(button, function()
+			self:Send(ActionCodes.CUE, cueName, false)
+		end)
+	end
+
+	local cue3Button = self.Buttons.CueButtons["State.Cue3"]
+	if cue3Button and cue3Button:FindFirstChild("Count") then
+		cue3Button:FindFirstChild("Count").FocusLost:Connect(function()
+			local newContent = cue3Button:FindFirstChild("Count").Text
+			if not newContent then
+				return
+			end
+			if not tonumber(newContent) then
+				return
+			end
+			self:Send(ActionCodes.CUE3_GROUPS, newContent)
+		end)
+	end
+
+	for actionName, button in self.Buttons.ActionButtons do
+		self:LeftClick(button, function()
+			self:Send(ActionCodes.ACTION, actionName, false)
+		end)
+		self:RightClick(button, function()
+			self:Send(ActionCodes.ACTION, actionName, true)
+		end)
+	end
+
+	self:LeftClick(self.Buttons.BeamControlButtons.Gobo, function()
+		self:Send(ActionCodes.BEAM_MODE, "Gobo")
+	end)
+	self:LeftClick(self.Buttons.BeamControlButtons.Beam, function()
+		self:Send(ActionCodes.BEAM_MODE, "Beam")
+	end)
+	self:LeftClick(self.Buttons.BeamControlButtons.NoBeam, function()
+		self:Send(ActionCodes.BEAM_MODE, "NoBeam")
+	end)
+
+	for tilt, button in self.Buttons.TiltButtons do
+		self:LeftClick(button, function()
+			if ButtonHandler.IsMobileView and self.NegativeTilt then
+				self:Send(ActionCodes.TILT, -tilt)
+			else
+				self:Send(ActionCodes.TILT, tilt)
+			end
+		end)
+		self:RightClick(button, function()
+			self:Send(ActionCodes.TILT, -tilt)
+		end)
+	end
+
+	for pan, button in self.Buttons.PanButtons do
+		self:LeftClick(button, function()
+			if ButtonHandler.IsMobileView and self.NegativePan then
+				self:Send(ActionCodes.PAN, -pan)
+			else
+				self:Send(ActionCodes.PAN, pan)
+			end
+		end)
+		self:RightClick(button, function()
+			self:Send(ActionCodes.PAN, -pan)
+		end)
+	end
+
+	for speed, button in self.Buttons.MotorSpeedButtons do
+		self:LeftClick(button, function()
+			self:Send(ActionCodes.MOTOR_SPEED, speed)
+		end)
+	end
+
+	for speed, button in self.Buttons.CueSpeedButtons do
+		self:LeftClick(button, function()
+			self:Send(ActionCodes.CUE_SPEED, speed)
+		end)
+	end
+
+	for speed, button in self.Buttons.FadeSpeedButtons do
+		self:LeftClick(button, function()
+			self:Send(ActionCodes.FADE_SPEED, speed)
+		end)
+	end
+
+	self:Toggle(self.Buttons.ModifierButtons.LoopCues, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_LOOP_CUES)
+		else
+			self:Send(ActionCodes.LOOP_CUES, enabled)
+		end
+	end)
+	self:Toggle(self.Buttons.ModifierButtons.AnimateGradients, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_ANIMATE_GRADIENTS)
+		else
+			self:Send(ActionCodes.ANIMATE_GRADIENTS, enabled)
+		end
+	end)
+	self:Toggle(self.Buttons.ModifierButtons.Overshoot, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_OVERSHOOT)
+		else
+			self:Send(ActionCodes.OVERSHOOT, enabled)
+		end
+	end)
+	self:Toggle(self.Buttons.ModifierButtons.KillCues, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_KILL_CUES)
+		else
+			self:Send(ActionCodes.KILL_CUES, enabled)
+		end
+	end)
+	self:Toggle(self.Buttons.ModifierButtons.GroupFixtures, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_GROUP_FIXTURES)
+		else
+			self:Send(ActionCodes.GROUP_FIXTURES, enabled)
+		end
+	end)
+	self:Toggle(self.Buttons.ModifierButtons.GroupRandom, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_GROUP_RANDOM)
+		else
+			self:Send(ActionCodes.GROUP_RANDOM, enabled)
+		end
+	end)
+
+	self:LeftClick(self.Buttons.ModifierButtons.Reset, function()
+		self:Send(ActionCodes.HARD_RESET)
+	end)
+	self:RightClick(self.Buttons.ModifierButtons.Reset, function()
+		self:Send(ActionCodes.RESET)
+	end)
+
+	self:Toggle(self.Buttons.ModifierButtons.GoboRotate, function(enabled)
+		if ButtonHandler.IsMobileView then
+			self:Send(ActionCodes.TOGGLE_GOBO_ROTATE)
+		else
+			self:Send(ActionCodes.GOBO_ROTATE, enabled)
+		end
+	end)
+
+	self:Toggle(self.Buttons.ModifierButtons.SecondaryColor, function(enabled)
+		self:Send(ActionCodes.SECONDARY_COLOR, enabled)
+	end)
+
+	if self.Buttons.Sliders.Thickness then
+		local thicknessSlider = Slider.Client(self.Buttons.Sliders.Thickness, 0, 400, self.Buttons.Other.Gui)
+		table.insert(
+			self.Connections,
+			thicknessSlider.Changed:Connect(function(value: number)
+				self:Send(ActionCodes.THICKNESS, value / 100)
+			end)
+		)
+		table.insert(self.Sliders, thicknessSlider)
+	end
+
+	if self.Buttons.Sliders.Dimness then
+		local dimnessSlider = Slider.Client(self.Buttons.Sliders.Dimness, 0, 1, self.Buttons.Other.Gui)
+		table.insert(
+			self.Connections,
+			dimnessSlider.Changed:Connect(function(value)
+				self:Send(ActionCodes.DIMNESS, value)
+			end)
+		)
+		table.insert(self.Sliders, dimnessSlider)
+	end
+
+	if self.Buttons.Sliders.GoboSpread then
+		local spreadSlider = Slider.Client(self.Buttons.Sliders.GoboSpread, 0, 400, self.Buttons.Other.Gui)
+		table.insert(
+			self.Connections,
+			spreadSlider.Changed:Connect(function(value: number)
+				self:Send(ActionCodes.GOBO_SPREAD, value / 100)
+			end)
+		)
+		table.insert(self.Sliders, spreadSlider)
+	end
+
+	-- follow spotlight stuff
+	local function handleSearch(searchPhrase)
+		local players = {}
+		for _, player in Players:GetPlayers() do
+			if
+				searchPhrase ~= ""
+				and (
+					string.lower(string.sub(player.Name, 1, #searchPhrase)) == string.lower(searchPhrase)
+					or string.lower(string.sub(player.DisplayName, 1, #searchPhrase)) == string.lower(searchPhrase)
+				)
+			then
+				table.insert(players, player)
+			end
+		end
+		local points = {}
+		for _, point in followPointsFolder:GetChildren() do
+			if not point:IsA("ObjectValue") then
+				continue
+			end
+			local nameAttribute = point:GetAttribute("Name")
+			local id = point:GetAttribute("ID")
+			local name = if typeof(nameAttribute) == "string" then nameAttribute else "<Error>"
+			if string.lower(string.sub(name, 1, #searchPhrase)) == string.lower(searchPhrase) then
+				table.insert(points, { Name = name, ID = id })
+			end
+		end
+
+		if self.Buttons.FollowSpotlights.List then
+			for _, button in self.Buttons.FollowSpotlights.List:GetChildren() do
+				if button:IsA("ImageButton") then
+					button:Destroy() -- TODO: looping over children here is dumb
+				end
+			end
+			table.sort(points, function(pointA, pointB)
+				return string.lower(pointA.Name) < string.lower(pointB.Name)
+			end)
+			table.sort(players, function(playerA, playerB)
+				return string.lower(playerA.Name) < string.lower(playerB.Name)
+			end)
+			for _, point in points do
+				local button = script.FollowSpotlightObject:Clone()
+				button:FindFirstChild("Name").Text = point.Name
+				button.MouseButton1Click:Connect(function()
+					self:Send(ActionCodes.FOLLOW_SPOTLIGHT, point.ID)
+				end)
+				button.Parent = self.Buttons.FollowSpotlights.List
+			end
+			for _, player in players do
+				local button = script.FollowSpotlightUser:Clone()
+				local name = if player.DisplayName == player.Name
+					then player.Name
+					else `{player.DisplayName} @{player.Name}`
+				button:FindFirstChild("Name").Text = name
+				task.spawn(function()
+					button.Icon.Image = Players:GetUserThumbnailAsync(
+						player.UserId,
+						Enum.ThumbnailType.HeadShot,
+						Enum.ThumbnailSize.Size60x60
+					)
+				end)
+				button.MouseButton1Click:Connect(function()
+					self:Send(ActionCodes.FOLLOW_SPOTLIGHT, player)
+				end)
+				button.Parent = self.Buttons.FollowSpotlights.List
+			end
+			self.Buttons.FollowSpotlights.List.CanvasSize = UDim2.fromOffset(0, 40 * (#players + #points) + 10)
+		end
+	end
+
+	if self.Buttons.FollowSpotlights.SearchBox then
+		self.Buttons.FollowSpotlights.SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+			local searchPhrase = self.Buttons.FollowSpotlights.SearchBox.Text
+			handleSearch(searchPhrase)
+		end)
+	end
+	handleSearch("")
+
+	self:LeftClick(self.Buttons.FollowSpotlights.Cancel, function()
+		self:Send(ActionCodes.FOLLOW_SPOTLIGHT, nil)
+	end)
+
+	-- color picker stuff
+	if self.Buttons.ColorPicker.More then
+		self:LeftClick(self.Buttons.ColorPicker.More, function()
+			if self.Buttons.ColorPicker.Advanced then
+				self.Buttons.ColorPicker.Advanced.Visible = true
+			end
+			if self.Buttons.ColorPicker.Less then
+				self.Buttons.ColorPicker.Less.Visible = true
+			end
+			self.Buttons.ColorPicker.More.Visible = false
+		end)
+	end
+
+	if self.Buttons.ColorPicker.Less then
+		self:LeftClick(self.Buttons.ColorPicker.Less, function()
+			if self.Buttons.ColorPicker.Advanced then
+				self.Buttons.ColorPicker.Advanced.Visible = false
+			end
+			if self.Buttons.ColorPicker.More then
+				self.Buttons.ColorPicker.More.Visible = true
+			end
+			self.Buttons.ColorPicker.Less.Visible = false
+		end)
+	end
+
+	local picker = ColorPicker.new(self.Buttons.ColorPicker, self.Buttons.Other.Gui)
+	picker.ChangeColor:Connect(function(color, side)
+		if side == "A" then
+			self:Send(ActionCodes.LEFT_CLICK_COLOR, color)
+		else
+			self:Send(ActionCodes.RIGHT_CLICK_COLOR, color)
+		end
+	end)
+	picker.AddColor:Connect(function(color, global)
+		self:Send(ActionCodes.ADD_CUSTOM_COLOR, color, global)
+	end)
+	picker.RemoveColor:Connect(function(color, global)
+		self:Send(ActionCodes.REMOVE_CUSTOM_COLOR, color, global)
+	end)
+	picker.ChangeGlobal:Connect(function(color, global)
+		self:Send(ActionCodes.CHANGE_CUSTOM_COLOR_GLOBAL, color, global)
+	end)
+	self.Picker = picker
+
+	self:LeftClick(self.Buttons.Other.TiltPlusMinus, function()
+		self.NegativeTilt = not self.NegativeTilt
+		if self.NegativeTilt then
+			self.Buttons.Other.TiltPlusMinus.ImageColor3 = SELECTED_COLOR
+		else
+			self.Buttons.Other.TiltPlusMinus.ImageColor3 = DESELECTED_COLOR
+		end
+	end)
+
+	self:LeftClick(self.Buttons.Other.PanPlusMinus, function()
+		self.NegativePan = not self.NegativePan
+		if self.NegativePan then
+			self.Buttons.Other.PanPlusMinus.ImageColor3 = SELECTED_COLOR
+		else
+			self.Buttons.Other.PanPlusMinus.ImageColor3 = DESELECTED_COLOR
+		end
+	end)
+
+	self:LeftClick(self.Buttons.Other.WarningCloseButton, function()
+		self:Send(ActionCodes.CLOSE_WARNING)
+	end)
+	self:LeftClick(self.Buttons.Other.UpdateCloseButton, function()
+		self:Send(ActionCodes.CLOSE_UPDATE)
+	end)
+	self:LeftClick(self.Buttons.Other.UpdateNotification, function()
+		self:Send(ActionCodes.SHOW_UPDATE)
+	end)
+	self:LeftClick(self.Buttons.Other.AnnouncementNotification, function()
+		self:Send(ActionCodes.SHOW_ANNOUNCEMENT)
+	end)
+	self:LeftClick(self.Buttons.Other.AnnouncementCloseButton, function()
+		self:Send(ActionCodes.CLOSE_ANNOUNCEMENT)
+	end)
+
+	self:LeftClick(self.Buttons.Other.Version, function()
+		if self.Buttons.Other.About then
+			self.Buttons.Other.About.Visible = not self.Buttons.Other.About.Visible
+		end
+	end)
+
+	self:LeftClick(self.Buttons.Other.Donate, function()
+		self:Send(ActionCodes.DONATE)
+	end)
+end
+
+function ButtonHandler._HandleKeybind(self: ButtonHandler, keybind: MappedKeybind)
+	local name = keybind.Action
+	local value = keybind.Value
+	if name == "On" then
+		self:Send(ActionCodes.ON)
+	elseif name == "Off" then
+		self:Send(ActionCodes.OFF)
+	elseif name == "FadeOn" then
+		self:Send(ActionCodes.FADE_ON)
+	elseif name == "FadeOff" then
+		self:Send(ActionCodes.FADE_OFF)
+	elseif name == "Reset" then
+		self:Send(ActionCodes.RESET)
+	elseif name == "HardReset" then
+		self:Send(ActionCodes.HARD_RESET)
+	elseif name == "CueToggle" then
+		self:Send(ActionCodes.TOGGLE_CUE, value)
+	elseif name == "CueOn" then
+		self:Send(ActionCodes.CUE, value, true)
+	elseif name == "CueOff" then
+		self:Send(ActionCodes.CUE, value, false)
+	elseif name == "Brightness" then
+		local number = tonumber(value)
+		if number then
+			if string.sub(value, 1, 1) == "+" or string.sub(value, 1, 1) == "-" then
+				self:Send(ActionCodes.ADJUST_DIMNESS, number / 100)
+			else
+				self:Send(ActionCodes.DIMNESS, number / 100)
+			end
+		end
+	elseif name == "CueSpeed" then
+		local number = tonumber(value)
+		if number then
+			if string.sub(value, 1, 1) == "+" or string.sub(value, 1, 1) == "-" then
+				self:Send(ActionCodes.ADJUST_CUE_SPEED, number)
+			else
+				self:Send(ActionCodes.CUE_SPEED, number)
+			end
+		end
+	elseif name == "FadeSpeed" then
+		local number = tonumber(value)
+		if number then
+			if string.sub(value, 1, 1) == "+" or string.sub(value, 1, 1) == "-" then
+				self:Send(ActionCodes.ADJUST_FADE_SPEED, number)
+			else
+				self:Send(ActionCodes.FADE_SPEED, number)
+			end
+		end
+	elseif name == "BeamThickness" then
+		local number = tonumber(value)
+		if number then
+			if string.sub(value, 1, 1) == "+" or string.sub(value, 1, 1) == "-" then
+				self:Send(ActionCodes.ADJUST_THICKNESS, number / 100)
+			else
+				self:Send(ActionCodes.THICKNESS, number / 100)
+			end
+		end
+	elseif name == "GoboSpread" then
+		local number = tonumber(value)
+		if number then
+			if string.sub(value, 1, 1) == "+" or string.sub(value, 1, 1) == "-" then
+				self:Send(ActionCodes.ADJUST_GOBO_SPREAD, number / 100)
+			else
+				self:Send(ActionCodes.GOBO_SPREAD, number / 100)
+			end
+		end
+	elseif name == "GoboRotate" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_GOBO_ROTATE)
+		elseif value == "On" then
+			self:Send(ActionCodes.GOBO_ROTATE, true)
+		else
+			self:Send(ActionCodes.GOBO_ROTATE, false)
+		end
+	elseif name == "KillCues" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_KILL_CUES)
+		elseif value == "On" then
+			self:Send(ActionCodes.KILL_CUES, true)
+		else
+			self:Send(ActionCodes.KILL_CUES, false)
+		end
+	elseif name == "GroupFixtures" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_GROUP_FIXTURES)
+		elseif value == "On" then
+			self:Send(ActionCodes.GROUP_FIXTURES, true)
+		else
+			self:Send(ActionCodes.GROUP_FIXTURES, false)
+		end
+	elseif name == "LoopCues" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_LOOP_CUES)
+		elseif value == "On" then
+			self:Send(ActionCodes.LOOP_CUES, true)
+		else
+			self:Send(ActionCodes.LOOP_CUES, false)
+		end
+	elseif name == "GroupRandom" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_GROUP_RANDOM)
+		elseif value == "On" then
+			self:Send(ActionCodes.GROUP_RANDOM, true)
+		else
+			self:Send(ActionCodes.GROUP_RANDOM, false)
+		end
+	elseif name == "SmoothColor" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_SMOOTH_COLOR)
+		elseif value == "On" then
+			self:Send(ActionCodes.SMOOTH_COLOR, true)
+		else
+			self:Send(ActionCodes.SMOOTH_COLOR, false)
+		end
+	elseif name == "AnimatedGradients" then
+		if value == "Toggle" then
+			self:Send(ActionCodes.TOGGLE_ANIMATE_GRADIENTS)
+		elseif value == "On" then
+			self:Send(ActionCodes.ANIMATE_GRADIENTS, true)
+		else
+			self:Send(ActionCodes.ANIMATE_GRADIENTS, false)
+		end
+	elseif name == "GroupToggle" then
+		self:Send(ActionCodes.TOGGLE_CORE, value)
+	elseif name == "GroupOn" then
+		self:Send(ActionCodes.TOGGLE_CORE, value, true)
+	elseif name == "GroupOff" then
+		self:Send(ActionCodes.TOGGLE_CORE, value, false)
+	elseif name == "Action" then
+		self:Send(ActionCodes.ACTION, value)
+	elseif name == "ColorA" then
+		self:Send(ActionCodes.LEFT_CLICK_COLOR, value, "Combo")
+	elseif name == "ColorB" then
+		self:Send(ActionCodes.RIGHT_CLICK_COLOR, value, "Combo")
+	elseif name == "Color" then
+		self:Send(ActionCodes.LEFT_CLICK_COLOR, value, "All")
+	elseif name == "ColorSecondary" then
+		self:Send(ActionCodes.LEFT_CLICK_COLOR, value, "Second")
+	elseif name == "SwitchColors" then
+		self:Send(ActionCodes.SWITCH_COLORS)
+	elseif name == "Tilt" then
+		self:Send(ActionCodes.TILT, tonumber(value))
+	elseif name == "TiltAdjust" then
+		self:Send(ActionCodes.ADJUST_TILT, tonumber(value))
+	elseif name == "Pan" then
+		self:Send(ActionCodes.PAN, tonumber(value))
+	elseif name == "PanAdjust" then
+		self:Send(ActionCodes.ADJUST_PAN, tonumber(value))
+	elseif name == "MotorSpeed" then
+		self:Send(ActionCodes.MOTOR_SPEED_NAMED, value)
+	elseif name == "BeamMode" then
+		self:Send(ActionCodes.BEAM_MODE, value)
+	elseif name == "Cue3Groups" then
+		self:Send(ActionCodes.CUE3_GROUPS, tonumber(value))
+	elseif name == "Follow" then
+		if value == "" then
+			self:Send(ActionCodes.FOLLOW_SPOTLIGHT, nil)
+		elseif Players:FindFirstChild(value) then
+			self:Send(ActionCodes.FOLLOW_SPOTLIGHT, Players:FindFirstChild(value))
+		else
+			for _, object in followPointsFolder:GetChildren() do
+				if object:IsA("ObjectValue") and object:GetAttribute("Name") == value then
+					self:Send(ActionCodes.FOLLOW_SPOTLIGHT, object:GetAttribute("ID"))
+					break
+				end
+			end
+		end
+	end
+end
+
+function ButtonHandler.ConnectKeybinds(self: ButtonHandler)
+	if #self.Keybinds == 0 then
+		return
+	end
+	for _, keybind in self.Keybinds do
+		for key, _ in keybind.Mapped do
+			self.KeysToListenFor[key] = true
+		end
+	end
+	self:Toggle(self.Buttons.Other.Keybinds, function(enabled)
+		if enabled then
+			self:ActivateKeybinds()
+		else
+			self:DeactivateKeybinds()
+		end
+	end)
+	if keybindsByPanelInstance[self.Panel] then
+		self:ActivateKeybinds()
+	end
+end
+
+function ButtonHandler.SwitchToMobileView(self: ButtonHandler)
+	self.Show(self.Buttons.StateButtons.OnOffFrame)
+	self.Hide(self.Buttons.StateButtons.OnOff)
+	self.Show(self.Buttons.StateButtons.FadeOnOffFrame)
+	self.Hide(self.Buttons.StateButtons.FadeOnOff)
+
+	self.Show(self.Buttons.ColorModeButtons.ComboFrame)
+	self.Hide(self.Buttons.ColorModeButtons.Combo)
+
+	self.Show(self.Buttons.Other.TiltPlusMinus)
+	self.Show(self.Buttons.Other.PanPlusMinus)
+
+	if UserInputService.PreferredInput == Enum.PreferredInput.Touch then
+		self.Hide(self.Buttons.Other.Keybinds)
+	elseif #self.Keybinds > 0 then
+		self.Show(self.Buttons.Other.Keybinds)
+	end
+end
+
+function ButtonHandler.SwitchToDesktopView(self: ButtonHandler)
+	self.Hide(self.Buttons.StateButtons.OnOffFrame)
+	self.Show(self.Buttons.StateButtons.OnOff)
+	self.Hide(self.Buttons.StateButtons.FadeOnOffFrame)
+	self.Show(self.Buttons.StateButtons.FadeOnOff)
+
+	self.Hide(self.Buttons.ColorModeButtons.ComboFrame)
+	self.Show(self.Buttons.ColorModeButtons.Combo)
+
+	self.Hide(self.Buttons.Other.TiltPlusMinus)
+	self.Hide(self.Buttons.Other.PanPlusMinus)
+
+	if #self.Keybinds > 0 then
+		self.Show(self.Buttons.Other.Keybinds)
+	else
+		self.Hide(self.Buttons.Other.Keybinds)
+	end
+end
+
+function ButtonHandler.ActivateKeybinds(self: ButtonHandler)
+	self.Buttons.Other.Keybinds.BackgroundColor3 = SELECTED_COLOR
+	if keybindsByPanelInstance[self.Panel] then
+		for _, connection in keybindsByPanelInstance[self.Panel] do
+			connection:Disconnect()
+		end
+	end
+	keybindsByPanelInstance[self.Panel] = {
+		UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
+			if processed then
+				return
+			end
+			if not self.KeysToListenFor[input.KeyCode] then
+				return
+			end
+			local possibleActiveKeybinds: { MappedKeybind } = {}
+			for _, keybind in self.Keybinds do
+				if not keybind.Mapped[input.KeyCode] then
+					continue
+				end
+				local areAllKeysDown = true
+				for key, _ in keybind.Mapped do
+					if not UserInputService:IsKeyDown(key) then
+						areAllKeysDown = false
+						break
+					end
+				end
+				if areAllKeysDown then
+					table.insert(possibleActiveKeybinds, keybind)
+				end
+			end
+			local keybindWithLargestKeyCombo = possibleActiveKeybinds[1]
+			for _, keybind in possibleActiveKeybinds do
+				if #keybind.Keys > #keybindWithLargestKeyCombo.Keys then
+					keybindWithLargestKeyCombo = keybind
+				end
+			end
+			if keybindWithLargestKeyCombo then
+				keybindWithLargestKeyCombo.Active = true
+				self:_HandleKeybind(keybindWithLargestKeyCombo)
+			end
+		end),
+		UserInputService.InputEnded:Connect(function(input: InputObject)
+			if not self.KeysToListenFor[input.KeyCode] then
+				return
+			end
+			for _, keybind in self.Keybinds do
+				if not keybind.Mapped[input.KeyCode] then
+					continue
+				end
+				keybind.Active = false
+			end
+		end),
+	}
+end
+
+function ButtonHandler.DeactivateKeybinds(self: ButtonHandler)
+	self.Buttons.Other.Keybinds.BackgroundColor3 = DESELECTED_COLOR
+	if keybindsByPanelInstance[self.Panel] then
+		for _, connection in keybindsByPanelInstance[self.Panel] do
+			connection:Disconnect()
+		end
+	end
+end
+
+function ButtonHandler.WhitelistStatusChanged(self: ButtonHandler, isWhitelisted: boolean)
+	if not isWhitelisted then
+		self:DeactivateKeybinds()
+	end
+end
+
+function ButtonHandler.Show(frame)
+	if frame then
+		frame.Visible = true
+	end
+end
+
+function ButtonHandler.Hide(frame)
+	if frame then
+		frame.Visible = false
+	end
+end
+
+function ButtonHandler.Toggle(self: ButtonHandler, button: TextButton?, func: (boolean) -> ())
+	if not button then
+		return
+	end
+	if not button:IsA("GuiButton") then
+		return
+	end
+	self:LeftClick(button, function()
+		func(true)
+	end)
+	self:RightClick(button, function()
+		func(false)
+	end)
+end
+
+function ButtonHandler.LeftClick(self: ButtonHandler, button: TextButton?, func: () -> ())
+	if not button then
+		return
+	end
+	if not button:IsA("GuiButton") then
+		return
+	end
+	table.insert(self.Connections, button.MouseButton1Click:Connect(func))
+end
+
+function ButtonHandler.RightClick(self: ButtonHandler, button: TextButton?, func: () -> ())
+	if not button then
+		return
+	end
+	if not button:IsA("GuiButton") then
+		return
+	end
+	table.insert(self.Connections, button.MouseButton2Click:Connect(func))
+end
+
+function ButtonHandler.Send(self: ButtonHandler, ...: any)
+	sendEvent:FireServer(self.Panel, ...)
+end
+
+function ButtonHandler.Destroy(self: ButtonHandler)
+	for _, connection in self.Connections do
+		connection:Disconnect()
+	end
+	table.clear(self.Connections)
+	for _, slider in self.Sliders do
+		slider.Destroy()
+	end
+	table.clear(self.Sliders)
+	self.Picker:Destroy()
+end
+
+return ButtonHandler

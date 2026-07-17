@@ -1,0 +1,15 @@
+local Action = {}
+Action.ForcesOnOff = false
+
+function Action.Client(Changer, Settings, cueSettings, executionSettings)
+	local fixtures = Changer.Indexer:Get("All", executionSettings.lensGroup)
+	Changer:CueOn(fixtures)
+	Changer:FadeOff(fixtures)
+end
+
+function Action.Server(Changer, Settings, cueSettings, executionSettings)
+	local fixtures = Changer.Indexer:Get("All", executionSettings.lensGroup)
+	Changer:MarkOff(fixtures)
+end
+
+return Action

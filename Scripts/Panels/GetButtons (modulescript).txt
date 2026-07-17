@@ -1,0 +1,308 @@
+local MOTOR_SPEEDS = {
+	FREEZE = 0,
+	SS = 0.001,
+	S = 0.005,
+	M = 0.01,
+	F = 0.05,
+}
+
+local ACTIONS_IN_DISGUISE = { "Cue6" }
+
+local function safeGet(base: Instance?, path: string): TextButton?
+	if not base then
+		return nil
+	end
+	for _, pathPiece in string.split(path, ".") do
+		local child = base:FindFirstChild(pathPiece)
+		if not child then
+			return nil
+		end
+		base = child
+	end
+	return base
+end
+
+local function loopOverButtons(base: Instance?, func: (TextButton) -> nil): nil
+	if not base then
+		return nil
+	end
+	for _, thing in base:GetChildren() do
+		if thing:IsA("ImageButton") or thing:IsA("TextButton") then
+			func(thing)
+		end
+	end
+	return
+end
+
+return {
+	MotorSpeeds = MOTOR_SPEEDS,
+
+	AddCores = function(panelPart, cores)
+		local coreSelectorFrame = safeGet(panelPart, "Display.Background.ColoursFunctions.Content.CoreSelector")
+		if not coreSelectorFrame then
+			return
+		end
+		for _, button in coreSelectorFrame:GetChildren() do
+			if button:IsA("GuiButton") and not table.find(cores, button.Name) then
+				button:Destroy()
+			end
+		end
+		for i, core in cores do
+			if coreSelectorFrame:FindFirstChild(core) then
+				continue
+			end
+			local button = script.CoreButton:Clone()
+			button.Name = core
+			button.LayoutOrder = i
+			button.GL_ButtonText.Text = core
+			button.Parent = coreSelectorFrame
+		end
+	end,
+
+	Get = function(panelPart)
+		local background = safeGet(panelPart, "Display.Background")
+		local colorFunctions = safeGet(background, "ColoursFunctions.Content.Functions")
+		local stateFunctions = safeGet(background, "LightState.Content.Functions")
+		local beamControlButtonsFrame = safeGet(background, "BeamControls.Content.Buttons")
+		local customPositions = safeGet(background, "Positions.Content")
+		local otherModifiers = safeGet(background, "Modifiers.Content.Other")
+		local followSpotlightsStuff = safeGet(background, "Positions.Content.Follow")
+
+		--// COLOR SELECTION
+		local colorButtons = {}
+		loopOverButtons(safeGet(background, "ColoursFunctions.Content.Colours"), function(button)
+			local gradient = safeGet(button, "UIGradient")
+			local color = if gradient then gradient.Color else button.BackgroundColor3
+			colorButtons[button] = color
+		end)
+
+		--// COLOR SELECTION MODE
+		local colorModeButtons = {
+			All = safeGet(colorFunctions, "All"),
+			Combo = safeGet(colorFunctions, "Combo"),
+			Switch = safeGet(colorFunctions, "Switch"),
+			Secondary = safeGet(colorFunctions, "Secondary"),
+
+			ComboFrame = safeGet(colorFunctions, "ComboFrame"),
+			ComboA = safeGet(colorFunctions, "ComboFrame.A"),
+			ComboB = safeGet(colorFunctions, "ComboFrame.B"),
+		}
+
+		--// MODIFIERS
+		local modifierButtons = {
+			SmoothColor = safeGet(colorFunctions, "Smooth"),
+			LoopCues = safeGet(otherModifiers, "LoopCues"),
+			Reset = safeGet(otherModifiers, "Reset"),
+			AnimateGradients = safeGet(colorFunctions, "AnimateGradients"),
+			GoboRotate = safeGet(background, "Positions.Content.LoopingSpecial.GoboRotate"),
+			Overshoot = safeGet(otherModifiers, "Overshoot"),
+			KillCues = safeGet(otherModifiers, "KillCues"),
+			GroupRandom = safeGet(otherModifiers, "GroupRand"),
+			GroupFixtures = safeGet(otherModifiers, "GroupFixtures"),
+		}
+
+		--// CUE SPEED
+		local cueSpeedButtons = {}
+		loopOverButtons(safeGet(background, "Modifiers.Content.CueSpeed.Buttons"), function(button)
+			cueSpeedButtons[tonumber(button.Name)] = button
+		end)
+
+		--// FADE SPEED
+		local fadeSpeedButtons = {}
+		loopOverButtons(safeGet(background, "Modifiers.Content.FadeSpeed.Buttons"), function(button)
+			fadeSpeedButtons[tonumber(button.Name)] = button
+		end)
+
+		--// ACTIONS
+		local actionButtons = {
+			Flash = safeGet(stateFunctions, "Flash"),
+
+			["CustomPositions.Wide"] = safeGet(customPositions, "NonLooping.Wide"),
+			["CustomPositions.In"] = safeGet(customPositions, "NonLooping.In"),
+			["CustomPositions.Cross"] = safeGet(customPositions, "NonLooping.Cross"),
+			["CustomPositions.UD"] = safeGet(customPositions, "NonLooping.UD"),
+		}
+
+		--// CUES
+		local cueButtons = {
+			Random = safeGet(stateFunctions, "Rand"),
+			FadeRandom = safeGet(stateFunctions, "FRand"),
+			Strobe = safeGet(stateFunctions, "Strobe"),
+			OldRandom = safeGet(stateFunctions, "ORand"),
+			BumpRandom = safeGet(stateFunctions, "BRand"),
+			["Position.Circle"] = safeGet(background, "Positions.Content.LoopingSpecial.Circle"),
+			["Position.RandomCircle"] = safeGet(background, "Positions.Content.LoopingSpecial.RandomCircle"),
+		}
+		loopOverButtons(safeGet(background, "LightState.Content.Cues"), function(button)
+			if table.find(ACTIONS_IN_DISGUISE, button.Name) then
+				actionButtons[button.Name] = button
+			else
+				cueButtons[`State.{button.Name}`] = button
+			end
+		end)
+		loopOverButtons(safeGet(background, "ColoursFunctions.Content.Cues"), function(button)
+			if button.Name == "Flash" then
+				actionButtons["ColorFlash"] = button
+			else
+				cueButtons[`Color.Color{button.Name}`] = button
+			end
+		end)
+		loopOverButtons(safeGet(customPositions, "Looping"), function(button)
+			cueButtons[`Position.{button.Name}`] = button
+		end)
+
+		--// CORE SELECTORS
+		local coreButtons = {}
+		loopOverButtons(safeGet(background, "ColoursFunctions.Content.CoreSelector"), function(button)
+			coreButtons[button.Name] = button
+		end)
+
+		--// STATE
+		local stateButtons = {
+			OnOff = safeGet(stateFunctions, "OX"),
+			FadeOnOff = safeGet(stateFunctions, "FOX"),
+			On = safeGet(stateFunctions, "OXFrame.O"),
+			Off = safeGet(stateFunctions, "OXFrame.X"),
+			FadeOn = safeGet(stateFunctions, "FOXFrame.O"),
+			FadeOff = safeGet(stateFunctions, "FOXFrame.X"),
+			OnOffFrame = safeGet(stateFunctions, "OXFrame"),
+			FadeOnOffFrame = safeGet(stateFunctions, "FOXFrame"),
+		}
+
+		--// SLIDERS
+		local sliders = {
+			Thickness = safeGet(background, "BeamControls.Content.Buttons.BeamThickness")
+				or safeGet(background, "BeamControls.Content.Sliders.BeamThickness"),
+			Dimness = safeGet(background, "LightState.Content.Brightness.BeamBrightness"),
+			GoboSpread = safeGet(background, "BeamControls.Content.Buttons.GoboSpread")
+				or safeGet(background, "BeamControls.Content.Sliders.GoboSpread"),
+		}
+
+		--// BEAM CONTROLS
+		local beamControlButtons = {
+			Gobo = safeGet(beamControlButtonsFrame, "Gobo"),
+			Beam = safeGet(beamControlButtonsFrame, "Beam"),
+			NoBeam = safeGet(beamControlButtonsFrame, "NoBeam"),
+		}
+
+		--// TILT
+		local tiltButtons = {}
+		loopOverButtons(safeGet(background, "Positions.Content.Tilt.Buttons"), function(button)
+			tiltButtons[tonumber(button.Name)] = button
+		end)
+
+		--// PAN
+		local panButtons = {}
+		loopOverButtons(safeGet(background, "Positions.Content.Pan.Buttons"), function(button)
+			panButtons[tonumber(button.Name)] = button
+		end)
+
+		--// MOTOR SPEEDS
+		local motorSpeedButtons = {
+			[MOTOR_SPEEDS.FREEZE] = safeGet(customPositions, "NonLooping.FREEZE"),
+			[MOTOR_SPEEDS.SS] = safeGet(customPositions, "NonLooping.SS"),
+			[MOTOR_SPEEDS.S] = safeGet(customPositions, "NonLooping.S"),
+			[MOTOR_SPEEDS.M] = safeGet(customPositions, "NonLooping.M"),
+			[MOTOR_SPEEDS.F] = safeGet(customPositions, "NonLooping.F"),
+		}
+
+		--// FOLLOW SPOTLIGHTS
+		local followSpotlights = {
+			SearchBox = safeGet(followSpotlightsStuff, "Search"),
+			List = safeGet(followSpotlightsStuff, "List.ScrollingFrame"),
+			Cancel = safeGet(followSpotlightsStuff, "CancelFollow"),
+		}
+
+		--// COLOR PICKER
+		local customColorsRow = safeGet(background, "ColoursFunctions.Content.ColourPicker")
+		local colourPickerFrame = safeGet(panelPart, "Display.ColourPicker")
+		local colourPickerContent = safeGet(colourPickerFrame, "Window.Content")
+		local colourPickerAdvanced = safeGet(colourPickerFrame, "Window.Advanced")
+		local colorPicker = {
+			List = customColorsRow,
+			OpenClose = safeGet(customColorsRow, "AddColour"),
+			PickerFrame = colourPickerFrame,
+			ColourWheel = safeGet(colourPickerContent, "ColourWheel"),
+			Preview = safeGet(colourPickerContent, "Preview"),
+			HueSlider = safeGet(colourPickerContent, "Sliders.Hue.Button"),
+			ValueSlider = safeGet(colourPickerContent, "Sliders.Value.Button"),
+			Hex = safeGet(colourPickerAdvanced, "Content.RGB.Hex.TextBox"),
+			R = safeGet(colourPickerAdvanced, "Content.RGB.Red.TextBox"),
+			G = safeGet(colourPickerAdvanced, "Content.RGB.Green.TextBox"),
+			B = safeGet(colourPickerAdvanced, "Content.RGB.Blue.TextBox"),
+			H = safeGet(colourPickerAdvanced, "Content.HSV.Hue.TextBox"),
+			S = safeGet(colourPickerAdvanced, "Content.HSV.Saturation.TextBox"),
+			V = safeGet(colourPickerAdvanced, "Content.HSV.Value.TextBox"),
+			More = safeGet(colourPickerFrame, "Window.Topbar.Expand"),
+			Less = safeGet(colourPickerFrame, "Window.Topbar.Collapse"),
+			Advanced = colourPickerAdvanced,
+			Add = safeGet(colourPickerContent, "Options.Add"),
+			Remove = safeGet(colourPickerContent, "Options.Remove"),
+			GlobalToggle = safeGet(colourPickerAdvanced, "ApplyPanels.Toggle"),
+		}
+
+		local infoFrame = safeGet(panelPart, "Display.InfoFrame")
+
+		local other = {
+			UpdateNotification = safeGet(background, "Topbar.Info.UpdateIndicator"),
+			AnnouncementNotification = safeGet(background, "Topbar.Info.AnnouncementIndicator"),
+			InfoFrame = infoFrame,
+
+			WarningFrame = safeGet(infoFrame, "Warning"),
+			WarningCloseButton = safeGet(infoFrame, "Warning.TitleArea.Close"),
+			WarningMessage = safeGet(infoFrame, "Warning.MessageArea.Message"),
+
+			CriticalFrame = safeGet(infoFrame, "Critical"),
+			CriticalMessage = safeGet(infoFrame, "Critical.MessageArea.Message"),
+
+			AnnouncementFrame = safeGet(infoFrame, "Announcement"),
+			AnnouncementTitle = safeGet(infoFrame, "Announcement.TitleArea.Frame.Title"),
+			AnnouncementCloseButton = safeGet(infoFrame, "Announcement.TitleArea.Close"),
+			AnnouncementMessage = safeGet(infoFrame, "Announcement.MessageArea.Message"),
+
+			Gui = safeGet(panelPart, "Display"),
+			TiltPlusMinus = safeGet(background, "Positions.Content.Tilt.Title.PlusMinus"),
+			PanPlusMinus = safeGet(background, "Positions.Content.Pan.Title.PlusMinus"),
+
+			UpdateFrame = safeGet(infoFrame, "Update"),
+			UpdateTitle = safeGet(infoFrame, "Update.TitleArea.Frame.Title"),
+			UpdateCloseButton = safeGet(infoFrame, "Update.TitleArea.Close"),
+			UpdateMessageArea = safeGet(infoFrame, "Update.MessageArea"),
+			AdditionalUpdates = safeGet(infoFrame, "Update.MessageArea.AdditionalUpdates.Message"),
+
+			TopbarName = safeGet(background, "Topbar.LightName"),
+
+			About = safeGet(panelPart, "Display.About"),
+			Version = safeGet(background, "Topbar.Info.Version"),
+
+			ScriptVersion = safeGet(
+				panelPart,
+				"Display.About.Window.Content.Versions.ScriptVersion.LogoVersion.Version"
+			),
+			ScriptReleaseDate = safeGet(panelPart, "Display.About.Window.Content.Versions.ScriptVersion.ScriptDate"),
+
+			Donate = safeGet(panelPart, "Display.About.Window.Content.Extra.Donate"),
+			Keybinds = safeGet(background, "Topbar.Buttons.Keybinds"),
+		}
+
+		return {
+			ColorButtons = colorButtons,
+			ColorModeButtons = colorModeButtons,
+			ModifierButtons = modifierButtons,
+			CueSpeedButtons = cueSpeedButtons,
+			FadeSpeedButtons = fadeSpeedButtons,
+			CueButtons = cueButtons,
+			ActionButtons = actionButtons,
+			CoreButtons = coreButtons,
+			StateButtons = stateButtons,
+			BeamControlButtons = beamControlButtons,
+			TiltButtons = tiltButtons,
+			PanButtons = panButtons,
+			MotorSpeedButtons = motorSpeedButtons,
+			Sliders = sliders,
+			FollowSpotlights = followSpotlights,
+			ColorPicker = colorPicker,
+			Other = other,
+		}
+	end,
+}

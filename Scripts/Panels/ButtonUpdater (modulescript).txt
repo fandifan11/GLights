@@ -1,0 +1,504 @@
+local ButtonUpdater = {}
+ButtonUpdater.__index = ButtonUpdater
+
+local GetButtons = require(script.Parent.GetButtons)
+local Slider = require(script.Parent.Slider)
+
+local SELECTED_COLOR = Color3.fromRGB(0, 85, 255)
+local DESELECTED_COLOR = Color3.fromRGB(64, 64, 89)
+local SMALLNUM = 0.01
+
+function ButtonUpdater.new(panel, cores, coreOrder, defaultState)
+	local self = setmetatable({}, ButtonUpdater)
+
+	self.Cores = cores
+	self.DefaultState = defaultState or {}
+	self.CoreOrder = coreOrder
+	self.Buttons = GetButtons.Get(panel)
+	self.Sliders = {}
+	self.InfoFrameLayers = 0
+	self:_AddGradients()
+	self:_AddSliders()
+	self:_PositionColorPicker()
+
+	return self
+end
+
+local function generateGradient(button)
+	if not button then
+		return
+	end
+	local gradient = Instance.new("UIGradient")
+	gradient.Rotation = 30
+	gradient.Parent = button
+	button.ImageColor3 = Color3.fromRGB(255, 255, 255)
+	--local textLabel = Instance.new("TextLabel")
+	--textLabel.FontFace = button.FontFace
+	--textLabel.TextSize = button.TextSize
+	--textLabel.TextScaled = button.TextScaled
+	--textLabel.Text = button.Text
+	--textLabel.BackgroundTransparency = 1
+	--textLabel.TextWrapped = true
+	--textLabel.Size = UDim2.fromScale(1, 1)
+	--textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	--textLabel.TextYAlignment = button.TextYAlignment
+	--textLabel.TextXAlignment = button.TextXAlignment
+	--textLabel.Parent = button
+	--button.Text = ""
+	return gradient
+end
+
+function ButtonUpdater:_AddGradients()
+	generateGradient(self.Buttons.ColorModeButtons.Combo)
+	generateGradient(self.Buttons.ColorModeButtons.All)
+
+	generateGradient(self.Buttons.ModifierButtons.SmoothColor)
+	generateGradient(self.Buttons.ModifierButtons.LoopCues)
+	generateGradient(self.Buttons.ModifierButtons.AnimateGradients)
+	generateGradient(self.Buttons.ModifierButtons.GoboRotate)
+	generateGradient(self.Buttons.ModifierButtons.Overshoot)
+	generateGradient(self.Buttons.ModifierButtons.KillCues)
+	generateGradient(self.Buttons.ModifierButtons.GroupRandom)
+	generateGradient(self.Buttons.ModifierButtons.GroupFixtures)
+
+	generateGradient(self.Buttons.StateButtons.OnOff)
+	generateGradient(self.Buttons.StateButtons.FadeOnOff)
+	generateGradient(self.Buttons.StateButtons.On)
+	generateGradient(self.Buttons.StateButtons.Off)
+	generateGradient(self.Buttons.StateButtons.FadeOn)
+	generateGradient(self.Buttons.StateButtons.FadeOff)
+
+	for _, button in self.Buttons.CueButtons do
+		generateGradient(button)
+	end
+
+	for _, button in self.Buttons.MotorSpeedButtons do
+		generateGradient(button)
+	end
+
+	for _, button in self.Buttons.CueSpeedButtons do
+		generateGradient(button)
+	end
+
+	for _, button in self.Buttons.FadeSpeedButtons do
+		generateGradient(button)
+	end
+
+	for _, button in self.Buttons.BeamControlButtons do
+		generateGradient(button)
+	end
+end
+
+function ButtonUpdater:_AddSliders()
+	local sliderButtons = self.Buttons.Sliders
+	if sliderButtons.Thickness then
+		self.Sliders.Thickness = Slider.Server(
+			sliderButtons.Thickness,
+			0,
+			400,
+			if self.DefaultState.BeamThickness then self.DefaultState.BeamThickness * 100 else 100,
+			self.CoreOrder
+		)
+	end
+	if sliderButtons.Dimness then
+		self.Sliders.Dimness = Slider.Server(
+			sliderButtons.Dimness,
+			0,
+			100,
+			if self.DefaultState.Brightness then self.DefaultState.Brightness * 100 else 100,
+			self.CoreOrder
+		)
+	end
+	if sliderButtons.GoboSpread then
+		self.Sliders.GoboSpread = Slider.Server(
+			sliderButtons.GoboSpread,
+			0,
+			400,
+			if self.DefaultState.GoboSpread then self.DefaultState.GoboSpread * 100 else 100,
+			self.CoreOrder
+		)
+	end
+end
+
+function ButtonUpdater:_UpdateButton(btn, enabledStatuses)
+	if not btn then
+		return
+	end
+	local gradientInstance = btn.UIGradient
+	local keypoints = {}
+	local sizeOfOneGradientPiece = 1 / #enabledStatuses
+	for i, status in enabledStatuses do
+		local color = if status then SELECTED_COLOR else DESELECTED_COLOR
+		local ii = i - 1
+		if ii == 0 and i == #enabledStatuses then
+			table.insert(keypoints, ColorSequenceKeypoint.new(0, color))
+			table.insert(keypoints, ColorSequenceKeypoint.new(1, color))
+		elseif ii == 0 then
+			table.insert(keypoints, ColorSequenceKeypoint.new(0, color))
+			table.insert(keypoints, ColorSequenceKeypoint.new(sizeOfOneGradientPiece - SMALLNUM, color))
+		elseif i == #enabledStatuses then
+			table.insert(keypoints, ColorSequenceKeypoint.new(1 - sizeOfOneGradientPiece + SMALLNUM, color))
+			table.insert(keypoints, ColorSequenceKeypoint.new(1, color))
+		else
+			table.insert(keypoints, ColorSequenceKeypoint.new(ii * sizeOfOneGradientPiece + SMALLNUM, color))
+			table.insert(keypoints, ColorSequenceKeypoint.new(i * sizeOfOneGradientPiece - SMALLNUM, color))
+		end
+	end
+	gradientInstance.Color = ColorSequence.new(keypoints)
+end
+
+function ButtonUpdater:_PositionColorPicker()
+	local picker = self.Buttons.ColorPicker.PickerFrame
+	local addColor = self.Buttons.ColorPicker.OpenClose
+	local position = addColor.AbsolutePosition.Y + addColor.AbsoluteSize.Y
+	picker.Position = UDim2.new(0.5, 0, 0, position)
+	picker.Size = UDim2.new(1, 0, 1, -position)
+end
+
+function ButtonUpdater:UpdateColorComboButtons(newComboMode)
+	local buttons = self.Buttons.ColorModeButtons
+	if newComboMode == "All" then
+		if buttons.All then
+			buttons.All.ImageColor3 = SELECTED_COLOR
+		end
+		if buttons.Combo then
+			buttons.Combo.ImageColor3 = DESELECTED_COLOR
+		end
+		if buttons.Secondary then
+			buttons.Secondary.ImageColor3 = DESELECTED_COLOR
+		end
+	elseif newComboMode == "Combo" then
+		if buttons.All then
+			buttons.All.ImageColor3 = DESELECTED_COLOR
+		end
+		if buttons.Combo then
+			buttons.Combo.ImageColor3 = SELECTED_COLOR
+		end
+		if buttons.Secondary then
+			buttons.Secondary.ImageColor3 = DESELECTED_COLOR
+		end
+	else
+		if buttons.All then
+			buttons.All.ImageColor3 = DESELECTED_COLOR
+		end
+		if buttons.Combo then
+			buttons.Combo.ImageColor3 = DESELECTED_COLOR
+		end
+		if buttons.Secondary then
+			buttons.Secondary.ImageColor3 = SELECTED_COLOR
+		end
+	end
+end
+
+function ButtonUpdater:UpdateOnOffButtons()
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.Enabled[1])
+	end
+	self:_UpdateButton(self.Buttons.StateButtons.OnOff, values)
+	self:_UpdateButton(self.Buttons.StateButtons.FadeOnOff, values)
+	self:_UpdateButton(self.Buttons.StateButtons.On, values)
+	self:_UpdateButton(self.Buttons.StateButtons.Off, values)
+	self:_UpdateButton(self.Buttons.StateButtons.FadeOn, values)
+	self:_UpdateButton(self.Buttons.StateButtons.FadeOff, values)
+end
+
+function ButtonUpdater:UpdateFadeSpeedButtons()
+	local buttons = self.Buttons.FadeSpeedButtons
+	for speed, button in buttons do
+		local values = {}
+		for _, coreName in self.CoreOrder do
+			local core = self.Cores[coreName]
+			table.insert(values, core.Changer.State.FadeSpeed == speed)
+		end
+		self:_UpdateButton(button, values)
+	end
+end
+
+function ButtonUpdater:UpdateCueSpeedButtons()
+	local buttons = self.Buttons.CueSpeedButtons
+	for speed, button in buttons do
+		local values = {}
+		for _, coreName in self.CoreOrder do
+			local core = self.Cores[coreName]
+			table.insert(values, 1 / core.Changer.State.CueSpeed == speed)
+		end
+		self:_UpdateButton(button, values)
+	end
+end
+
+function ButtonUpdater:UpdateCoreSelectorButtons(activeCores)
+	local buttons = self.Buttons.CoreButtons
+	for coreName, button in buttons do
+		button.ImageColor3 = if activeCores[coreName] then SELECTED_COLOR else DESELECTED_COLOR
+	end
+end
+
+function ButtonUpdater:UpdateSmoothColorButton()
+	local button = self.Buttons.ModifierButtons.SmoothColor
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.SmoothColor)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateLoopCuesButton()
+	local button = self.Buttons.ModifierButtons.LoopCues
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.LoopCues)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateOvershootButton()
+	local button = self.Buttons.ModifierButtons.Overshoot
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.GlobalCueSettings.Overshoot)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateKillCuesButton()
+	local button = self.Buttons.ModifierButtons.KillCues
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.GlobalCueSettings.KillCues)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateGroupRandomButton()
+	local button = self.Buttons.ModifierButtons.GroupRandom
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.GlobalCueSettings.GroupRandom)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateGroupFixturesButton()
+	local button = self.Buttons.ModifierButtons.GroupFixtures
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer:GetLensGroup() == "WholeModels")
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateAnimatedGradientsButton()
+	local button = self.Buttons.ModifierButtons.AnimateGradients
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(values, core.Changer.State.AnimatedGradients)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateGoboRotateButton()
+	local button = self.Buttons.ModifierButtons.GoboRotate
+	if not button then
+		return
+	end
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		if core.Changer.State.GoboDirection == nil then
+			table.insert(values, false)
+		else
+			table.insert(values, core.Changer.State.GoboDirection["1"] ~= nil)
+		end
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateCueButton(cueName)
+	local button = self.Buttons.CueButtons[cueName]
+	local values = {}
+	for _, coreName in self.CoreOrder do
+		local core = self.Cores[coreName]
+		table.insert(
+			values,
+			if core.Changer.State.ActiveCues[cueName] or core.Changer.State.ActivePhysicsCues[cueName]
+				then true
+				else false
+		)
+	end
+	self:_UpdateButton(button, values)
+end
+
+function ButtonUpdater:UpdateBeamModeButtons()
+	for beamMode, button in self.Buttons.BeamControlButtons do
+		local values = {}
+		for _, coreName in self.CoreOrder do
+			local core = self.Cores[coreName]
+			table.insert(values, core.Changer.State.BeamMode == beamMode)
+		end
+		self:_UpdateButton(button, values)
+	end
+end
+
+function ButtonUpdater:UpdateMotorSpeedButtons()
+	for speed, button in self.Buttons.MotorSpeedButtons do
+		local values = {}
+		for _, coreName in self.CoreOrder do
+			local core = self.Cores[coreName]
+			table.insert(values, core.Changer.State.MotorSpeed == speed)
+		end
+		self:_UpdateButton(button, values)
+	end
+end
+
+function ButtonUpdater:UpdateThicknessSlider(value, core)
+	local slider = self.Sliders.Thickness
+	if slider then
+		slider:UpdateValue(value * 100, core)
+	end
+end
+
+function ButtonUpdater:UpdateDimnessSlider(value, core)
+	local slider = self.Sliders.Dimness
+	if slider then
+		slider:UpdateValue(value * 100, core)
+	end
+end
+
+function ButtonUpdater:UpdateGoboSpreadSlider(value, core)
+	local slider = self.Sliders.GoboSpread
+	if slider then
+		slider:UpdateValue(value * 100, core)
+	end
+end
+
+function ButtonUpdater:UpdateCue3Groups(groups)
+	local cue3Button = self.Buttons.CueButtons["State.Cue3"]
+	if cue3Button then
+		cue3Button.Count.Text = ""
+		cue3Button.Count.PlaceholderText = groups
+	end
+end
+
+function ButtonUpdater:ShowUpdateNotification()
+	local label = self.Buttons.Other.UpdateNotification
+	if label then
+		label.Visible = true
+	end
+end
+
+function ButtonUpdater:ShowAnnouncementNotification(): ()
+	local label = self.Buttons.Other.AnnouncementNotification
+	if label then
+		label.Visible = true
+	end
+end
+
+function ButtonUpdater:ShowError(message)
+	local criticalFrame = self.Buttons.Other.CriticalFrame
+	local criticalMessage = self.Buttons.Other.CriticalMessage
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not criticalFrame or not criticalMessage or not infoFrame then
+		return
+	end
+	if criticalFrame.Visible then
+		return
+	end
+	criticalFrame.Visible = true
+	criticalMessage.Text = message
+	infoFrame.Visible = true
+	self.InfoFrameLayers += 1
+end
+
+function ButtonUpdater:ShowWarning(message)
+	local warningFrame = self.Buttons.Other.WarningFrame
+	local warningMessage = self.Buttons.Other.WarningMessage
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not warningFrame or not warningMessage or not infoFrame then
+		return
+	end
+	if warningFrame.Visible then
+		return
+	end
+	warningFrame.Visible = true
+	warningMessage.Text = message
+	infoFrame.Visible = true
+	self.InfoFrameLayers += 1
+end
+
+function ButtonUpdater:CloseWarning()
+	local warningFrame = self.Buttons.Other.WarningFrame
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not warningFrame or warningFrame.Visible == false or not infoFrame then
+		return
+	end
+	warningFrame.Visible = false
+	self.InfoFrameLayers -= 1
+	if self.InfoFrameLayers == 0 then
+		infoFrame.Visible = false
+	end
+end
+
+function ButtonUpdater:ShowAnnouncementFrame(): ()
+	local announcementFrame = self.Buttons.Other.AnnouncementFrame
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not announcementFrame or not infoFrame then
+		return
+	end
+	if announcementFrame.Visible then
+		return
+	end
+	announcementFrame.Visible = true
+	infoFrame.Visible = true
+	self.InfoFrameLayers += 1
+end
+
+function ButtonUpdater:CloseAnnouncement(): ()
+	local announcementFrame = self.Buttons.Other.AnnouncementFrame
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not announcementFrame or announcementFrame.Visible == false or not infoFrame then
+		return
+	end
+	announcementFrame.Visible = false
+	self.InfoFrameLayers -= 1
+	if self.InfoFrameLayers == 0 then
+		infoFrame.Visible = false
+	end
+end
+
+function ButtonUpdater:ShowUpdateFrame()
+	local updateFrame = self.Buttons.Other.UpdateFrame
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not updateFrame or not infoFrame then
+		return
+	end
+	if updateFrame.Visible then
+		return
+	end
+	updateFrame.Visible = true
+	infoFrame.Visible = true
+	self.InfoFrameLayers += 1
+end
+
+function ButtonUpdater:CloseUpdate()
+	local updateFrame = self.Buttons.Other.UpdateFrame
+	local infoFrame = self.Buttons.Other.InfoFrame
+	if not updateFrame or updateFrame.Visible == false or not infoFrame then
+		return
+	end
+	updateFrame.Visible = false
+	self.InfoFrameLayers -= 1
+	if self.InfoFrameLayers == 0 then
+		infoFrame.Visible = false
+	end
+end
+
+return ButtonUpdater

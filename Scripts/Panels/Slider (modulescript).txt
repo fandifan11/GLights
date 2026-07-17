@@ -1,0 +1,141 @@
+local UserInputService = game:GetService("UserInputService")
+
+local camera = workspace.CurrentCamera
+
+local Slider = {}
+Slider.__index = Slider
+
+local MIN_POSITION = 0.0075
+local MAX_POSITION = 0.9975
+
+local function Map(n: number, oldMin: number, oldMax: number, min: number, max: number): number
+	return (min + ((max - min) * ((n - oldMin) / (oldMax - oldMin))))
+end
+
+function Slider.Client(button, minValue, maxValue, gui)
+	local s = {}
+
+	local movedEvent = Instance.new("BindableEvent")
+	local mouseDown = false
+
+	s.Changed = movedEvent.Event
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = { gui.Parent }
+
+	local function castRay()
+		local screenPosition = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(screenPosition.X, screenPosition.Y)
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 500, raycastParams)
+		if hit and hit.Instance then
+			if hit.Normal == gui.Parent.CFrame.UpVector then
+				local topLeftCFrame = gui.Parent.CFrame
+					* CFrame.new(gui.Parent.Size.X / 2, gui.Parent.Size.Y / 2, gui.Parent.Size.Z / 2)
+				local positionRelativeToAdornee = topLeftCFrame:PointToObjectSpace(hit.Position)
+				local projectedPosition = -positionRelativeToAdornee.Z * gui.PixelsPerStud
+				local relativePosition = projectedPosition - button.AbsolutePosition.X
+				local mappedValue = math.clamp(relativePosition / button.AbsoluteSize.X, 0, 1)
+				movedEvent:Fire(Map(mappedValue, 0, 1, minValue, maxValue), mappedValue)
+			end
+		end
+	end
+
+	local conn1 = button.InputBegan:Connect(function(input: InputObject)
+		if
+			input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			mouseDown = true
+			castRay()
+		end
+	end)
+
+	local conn2 = button.InputChanged:Connect(function(input: InputObject)
+		if
+			(input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch)
+			and mouseDown
+		then
+			castRay()
+		end
+	end)
+
+	local conn3 = UserInputService.InputEnded:Connect(function(input: InputObject)
+		if
+			mouseDown
+			and (
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch
+			)
+		then
+			mouseDown = false
+		end
+	end)
+
+	s.Destroy = function()
+		movedEvent:Destroy()
+		conn1:Disconnect()
+		conn2:Disconnect()
+		conn3:Disconnect()
+	end
+
+	return s
+end
+
+function Slider.Server(button, minValue, maxValue, startValue, segmentNames)
+	local self = setmetatable({}, Slider)
+
+	self.MinValue = minValue
+	self.MaxValue = maxValue
+	self.Segments = {}
+	self.SegmentCount = #segmentNames
+	self.Values = {}
+	self.SegmentNames = segmentNames
+	self.Button = button
+	self.Label = button:FindFirstChild("Label")
+	self.Title = if self.Label then self.Label.Text else ""
+
+	local segmentTemplate = button.A
+	for i, name in segmentNames do
+		local segment = segmentTemplate:Clone()
+		segment.Size = UDim2.new(0, 6, 1 / #segmentNames, 0)
+		segment.Position = UDim2.fromScale(
+			math.clamp(Map(startValue, minValue, maxValue, 0, 1), MIN_POSITION, MAX_POSITION),
+			(i - 1) * (1 / #segmentNames)
+		)
+		segment.Name = name
+		segment.Parent = button
+		self.Segments[name] = { Instance = segment, Offset = i - 1 }
+		self.Values[name] = startValue
+	end
+	segmentTemplate:Destroy()
+	self:_UpdateText()
+
+	return self
+end
+
+function Slider:_UpdateText()
+	local valueText = `{self.Title}: `
+	for i, name in self.SegmentNames do
+		valueText = valueText .. self.Values[name] .. "%"
+		if i ~= #self.SegmentNames then
+			valueText = valueText .. " | "
+		end
+	end
+	if self.Label then
+		self.Label.Text = valueText
+	end
+end
+
+function Slider:UpdateValue(newValue, segmentName)
+	local segment = self.Segments[segmentName]
+	local roundedValue = math.round(newValue)
+	self.Values[segmentName] = roundedValue
+	segment.Instance.Position = UDim2.fromScale(
+		math.clamp(Map(newValue, self.MinValue, self.MaxValue, 0, 1), MIN_POSITION, MAX_POSITION),
+		segment.Offset * (1 / self.SegmentCount)
+	)
+	self:_UpdateText()
+end
+
+return Slider

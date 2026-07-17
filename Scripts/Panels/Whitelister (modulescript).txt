@@ -1,0 +1,234 @@
+--[[
+	Example usage:
+
+	local Players = game:GetService("Players")
+	local Whitelister = require(...)
+	local whitelist = Whitelister.new({
+		Enabled = true,
+	 	List = { 1, "gabys2005", game.Teams.Staff },
+	})
+
+	Players.PlayerAdded:Connect(function(player: Player)
+		print("Is player whitelisted:", whitelist:isWhitelisted(player))
+	end)
+	whitelist.whitelistStatusChanged:Connect(fuction(player: Player, isWhitelisted: boolean)
+		print("Whitelist status of player changed:", player, isWhitelisted)
+	end)
+	
+	NOTE:
+	whitelistStatusChanged may not fire for a player, or may fire with the same value multiple times in a row
+	DO NOT depend on the event firing to show/hide controls whenever it gets fired, use the isWhitelisted param instead
+]]
+
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players = game:GetService("Players")
+
+local Whitelister = {}
+Whitelister.__index = Whitelister
+Whitelister._eventsConnected = false
+Whitelister._all = {}
+Whitelister._passes = {
+	toTrack = {},
+	overrides = {},
+}
+
+type Group = { Group: number, Ranks: { string } }
+type Gamepass = { Gamepass: number }
+
+export type WhitelistEntry = string | number | Team | Group | Gamepass | "PrivateServerOwner" | "PrivateServerPlayer"
+
+export type Whitelist = {
+	Enabled: boolean,
+	List: { WhitelistEntry },
+}
+
+type WhitelistElementList = {
+	usernames: { string },
+	userids: { number },
+	groups: { Group },
+	teams: { Team },
+	gamepasses: { Gamepass },
+	everyone: boolean,
+}
+
+function Whitelister.new(list: Whitelist)
+	local self = setmetatable({}, Whitelister)
+
+	self._event = Instance.new("BindableEvent")
+	self._event.Parent = script
+	self.whitelistStatusChanged = self._event.Event
+	self.WhitelistChanged = self.whitelistStatusChanged -- backwards compatibility
+	self.list = list
+	self._whitelisted = {}
+	self._dynamic = {}
+	self._elements = Whitelister._splitIntoElements(list.List)
+	self._connections = {}
+
+	for _, player in Players:GetPlayers() do
+		task.spawn(function()
+			self:addPlayer(player)
+		end)
+	end
+
+	Whitelister._connectEvents()
+	Whitelister._all[self] = true
+	return self
+end
+
+function Whitelister:isWhitelisted(player: Player): boolean
+	return self._whitelisted[player] or false
+end
+Whitelister.IsWhitelisted = Whitelister.isWhitelisted -- backwards compatibility
+
+function Whitelister:recalculateDynamicFor(player: Player): ()
+	if table.find(self._elements.teams, player.Team) then
+		self._whitelisted[player] = true
+		self._event:Fire(player, true)
+		return
+	end
+	for _, pass in self._elements.gamepasses do
+		if
+			(Whitelister._passes.overrides[player] and Whitelister._passes.overrides[player][pass.Gamepass])
+			or MarketplaceService:UserOwnsGamePassAsync(player.UserId, pass.Gamepass)
+		then
+			self._whitelisted[player] = true
+			self._event:Fire(player, true)
+			return
+		end
+	end
+	self._whitelisted[player] = nil
+	self._event:Fire(player, false)
+end
+
+function Whitelister:addPlayer(player: Player): ()
+	if
+		self.list.Enabled == false
+		or self._elements.everyone == true
+		or table.find(self._elements.usernames, string.lower(player.Name))
+		or table.find(self._elements.userids, player.UserId)
+	then
+		self._whitelisted[player] = true
+		self._event:Fire(player, true)
+		return
+	else
+		for _, group in self._elements.groups do
+			if table.find(group.ranks, string.lower(player:GetRoleInGroupAsync(group.group))) then
+				self._whitelisted[player] = true
+				self._event:Fire(player, true)
+				return
+			end
+		end
+		if #self._elements.teams == 0 and #self._elements.gamepasses == 0 then
+			return
+		end
+		self._dynamic[player] = true
+		self:recalculateDynamicFor(player)
+		self._connections[player] = {}
+		table.insert(
+			self._connections[player],
+			player:GetPropertyChangedSignal("Team"):Connect(function()
+				self:recalculateDynamicFor(player)
+			end)
+		)
+	end
+end
+
+function Whitelister._splitIntoElements(list: { WhitelistEntry }): WhitelistElementList
+	local elements = {
+		usernames = {},
+		userids = {},
+		groups = {},
+		teams = {},
+		gamepasses = {},
+		everyone = false,
+	}
+	for _, element in list do
+		if typeof(element) == "string" then
+			local lowered = string.lower(element)
+			if lowered == "privateserverowner" then
+				if game.PrivateServerOwnerId ~= 0 then
+					table.insert(elements.userids, game.PrivateServerOwnerId)
+				end
+			elseif lowered == "privateserverplayer" then
+				if game.PrivateServerId ~= "" and game.PrivateServerOwnerId ~= 0 then
+					elements.everyone = true
+				end
+			else
+				table.insert(elements.usernames, lowered)
+			end
+		elseif typeof(element) == "number" then
+			table.insert(elements.userids, element)
+		elseif typeof(element) == "Instance" then
+			if element:IsA("Team") then
+				table.insert(elements.teams, element)
+			end
+		elseif typeof(element) == "table" then
+			if element.Group then
+				local group = { group = element.Group, ranks = {} }
+				for _, rank in element.Ranks do
+					table.insert(group.ranks, string.lower(rank))
+				end
+				table.insert(elements.groups, group)
+			elseif element.Gamepass then
+				table.insert(elements.gamepasses, element)
+				Whitelister._passes.toTrack[element.Gamepass] = true
+			end
+		end
+	end
+	return elements
+end
+
+function Whitelister._connectEvents(): ()
+	if Whitelister._eventsConnected then
+		return
+	end
+	Whitelister._eventsConnected = true
+	Players.PlayerAdded:Connect(function(player: Player)
+		for whitelist in Whitelister._all do
+			whitelist:addPlayer(player)
+		end
+	end)
+	Players.PlayerRemoving:Connect(function(player: Player)
+		Whitelister._passes.overrides[player] = nil
+		for whitelist in Whitelister._all do
+			whitelist._whitelisted[player] = nil
+			whitelist._dynamic[player] = nil
+			if whitelist._connections[player] then
+				for _, connection in whitelist._connections[player] do
+					connection:Disconnect()
+				end
+			end
+			whitelist._connections[player] = nil
+		end
+	end)
+	MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player: Player, id: number, purchased: boolean)
+		if not purchased then
+			return
+		end
+		if not Whitelister._passes.toTrack[id] then
+			return
+		end
+		if not Whitelister._passes.overrides[player] then
+			Whitelister._passes.overrides[player] = {}
+		end
+		Whitelister._passes.overrides[player][id] = true
+		for whitelist in Whitelister._all do
+			if whitelist._dynamic[player] then
+				whitelist:recalculateDynamicFor(player)
+			end
+		end
+	end)
+	for _, player in Players:GetPlayers() do
+		task.spawn(function()
+			for whitelist in Whitelister._all do
+				whitelist:addPlayer(player)
+			end
+		end)
+	end
+end
+
+function Whitelister:destroy(): ()
+	Whitelister._all[self] = nil
+end
+
+return Whitelister

@@ -1,0 +1,62 @@
+return {
+	CanHaveBeam = true,
+	BeamDirection = Vector3.new(1, 0, 0),
+	BeamLength = 230,
+	BeamWidth0 = 1.1,
+	BeamWidth1 = 80,
+	DefaultBeamMode = "Beam",
+
+	CanHaveMotors = true,
+	HasTiltMotor = true,
+	HasPanMotor = true,
+	HasGoboMotor = true,
+
+	CanFollow = true,
+	FollowTextureLength = 0.5,
+	FollowBeamWidth = 0.125,
+
+	GetLens = function(model)
+		return model.Head.Lens
+	end,
+
+	CanHaveLight = true,
+	LightTemplate = {
+		Type = "SpotLight",
+		Angle = 18,
+		Face = "Right",
+		Range = 60,
+		Brightness = 3,
+	},
+
+	CanHaveGobo = true,
+	GoboSpread = 22,
+	GoboBeamWidth0 = 0.4,
+	GoboBeamWidth1 = 30,
+
+	AddMotors = function(model, motor, weld, unanchor)
+		motor(
+			"Tilt",
+			model.Arm.Arm,
+			model.Head.Head,
+			CFrame.new(0, 0.6, 0) * CFrame.Angles(0, math.rad(-90), math.rad(180)),
+			CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(-90), math.rad(-180))
+		)
+		motor(
+			"Pan",
+			model.Base.Base,
+			model.Arm.Arm,
+			CFrame.new(0, 1.3, 0) * CFrame.Angles(math.rad(90), 0, 0),
+			CFrame.new(0, 0, 0) * CFrame.Angles(math.rad(90), 0, 0)
+		)
+		motor(
+			"Gobo",
+			model.Head.Head,
+			model.Head.Lens,
+			CFrame.new(0, 1.05, 0) * CFrame.Angles(math.rad(90), 0, math.rad(-90)),
+			CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(-90), math.rad(180))
+		)
+		unanchor(model.Head.Head)
+		unanchor(model.Head.Lens)
+		unanchor(model.Arm.Arm)
+	end,
+}

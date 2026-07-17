@@ -1,0 +1,860 @@
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local Panel = {}
+Panel.__index = Panel
+Panel._AllPanelsByModel = {}
+Panel._ByFolderName = {}
+
+local eventsFolder = script.Parent.Events
+local followPointsFolder = script.Parent.Parent.Parent:FindFirstChild("FollowPoints")
+
+local Core = require(script.Parent.Parent.Core.Main)
+local ActionCodes = require(script.Parent.ActionCodes)
+local ButtonUpdater = require(script.Parent.ButtonUpdater)
+local GetButtons = require(script.Parent.GetButtons)
+local FollowPointsManager = require(script.Parent.FollowPointManager)
+local Whitelister = require(script.Parent.Whitelister)
+local UpdateChecker = require(script.Parent.UpdateChecker)
+local Version = require(script.Parent.Parent.Version)
+local getGlobalSettings = require(script.Parent.Parent.Core.getGlobalSettings)
+local GlobalSettings = getGlobalSettings()
+local SettingsManager = require(script.Parent.SettingsManager)
+
+local function deepCopy(tbl)
+	local result = {}
+	for i, v in tbl do
+		if typeof(v) == "table" then
+			result[i] = deepCopy(v)
+		else
+			result[i] = v
+		end
+	end
+	return result
+end
+
+local function createColourLookup(colourButtons: { [GuiButton]: Color3 | ColorSequence })
+	local lookup = {}
+	for button, colour in colourButtons do
+		lookup[button.Name] = colour
+	end
+	return lookup
+end
+
+local function isValidSelector(selector: string)
+	return selector == "All" or selector == "Odd" or selector == "Even" or tonumber(selector) ~= nil
+end
+
+function Panel.new(folder)
+	local self = setmetatable({}, Panel)
+
+	self.Folder = folder
+	self.Panel = folder:FindFirstChild("Panel")
+
+	self.Cores = {}
+	self.ActiveCores = {}
+	self.CoreOrder = {}
+	self.CoreFolders = {}
+	self.CustomColorButtons = {}
+	self.ColorSelectionMode = "All"
+
+	self:_SetCoreOrder()
+	GetButtons.AddCores(self.Panel, self.CoreOrder)
+	self.Settings = self:_GetAndVerifySettings()
+	self.ButtonUpdater = ButtonUpdater.new(self.Panel, self.Cores, self.CoreOrder, self.Settings.DefaultState)
+	self.Lookups = {
+		colours = createColourLookup(self.ButtonUpdater.Buttons.ColorButtons),
+		motorSpeeds = GetButtons.MotorSpeeds,
+	}
+	self:_SetCores()
+	self:ConnectEvents()
+
+	local whitelist = SettingsManager.getWhitelist(self.Settings.Whitelist or GlobalSettings.Whitelist)
+	if whitelist.Enabled == false and #whitelist.List > 0 then
+		self.ButtonUpdater:ShowWarning("The whitelist is filled but it's not enabled. Did you forget to enable it?")
+	end
+	self.Whitelist = Whitelister.new(whitelist)
+	self.Whitelist.whitelistStatusChanged:Connect(function(player, isWhitelisted)
+		eventsFolder.WhitelistStatusChanged:FireClient(player, self.Panel, isWhitelisted)
+	end)
+
+	self:_UpdateLabels()
+	self:_CheckForUpdate()
+	self:_SetDefaultState()
+
+	self.Panel:AddTag(`GLightsPanel{script.Parent.ID.Value}`)
+	self.Panel:SetAttribute("Transparency", self.Panel.Transparency)
+	Panel._AllPanelsByModel[self.Panel] = self
+	Panel._ByFolderName[self.Folder.Name] = self
+
+	return self
+end
+
+function Panel:_SetDefaultState()
+	local defaultState = self.Settings.DefaultState
+	if not defaultState then
+		return
+	end
+	if defaultState.On and typeof(defaultState.On) == "table" then
+		for _, selector in defaultState.On do
+			if isValidSelector(selector) then
+				self:_RunInternal("On", selector)
+			end
+		end
+	end
+	if defaultState.GroupFixtures then
+		self:_RunInternal("SetLensGroup", "WholeModels")
+	end
+	if defaultState.Color and self.Lookups.colours and typeof(defaultState.Color) == "table" then
+		for color, selectors in defaultState.Color do
+			if not self.Lookups.colours[color] then
+				continue
+			end
+			for _, selector in selectors do
+				if isValidSelector(selector) then
+					self:_RunInternal("Color", self.Lookups.colours[color], selector)
+				end
+			end
+		end
+	end
+	if defaultState.SecondaryColor and self.Lookups.colours and self.Lookups.colours[defaultState.SecondaryColor] then
+		self:_RunInternal("SetGlobalCueSetting", "SecondaryColor", self.Lookups.colours[defaultState.SecondaryColor])
+	end
+	if defaultState.CueSettings and typeof(defaultState.CueSettings) == "table" then
+		for cueName, settings in defaultState.CueSettings do
+			for setting, value in settings do
+				self:_RunInternal("SetCueSetting", cueName, setting, value)
+			end
+		end
+	end
+	if defaultState.EnabledCues and typeof(defaultState.EnabledCues) == "table" then
+		for _, cueName in defaultState.EnabledCues do
+			self:_RunInternal("Cue", cueName, true)
+		end
+	end
+	if defaultState.Brightness then
+		self:_RunInternal("Dimness", defaultState.Brightness)
+	end
+	if defaultState.CueSpeed then
+		self:_RunInternal("CueSpeed", defaultState.CueSpeed)
+	end
+	if defaultState.FadeSpeed then
+		self:_RunInternal("FadeSpeed", defaultState.FadeSpeed)
+	end
+	if defaultState.SmoothColor ~= nil then
+		self:_RunInternal("SmoothColor", defaultState.SmoothColor)
+	end
+	if defaultState.AnimatedGradients ~= nil then
+		self:_RunInternal("AnimatedGradients", defaultState.AnimatedGradients)
+	end
+	if defaultState.LoopCues ~= nil then
+		self:_RunInternal("LoopCues", defaultState.LoopCues)
+	end
+	if defaultState.GroupRandom then
+		self:_RunInternal("SetGlobalCueSetting", "GroupRandom", defaultState.GroupRandom)
+	end
+	if defaultState.Overshoot then
+		self:_RunInternal("SetGlobalCueSetting", "Overshoot", defaultState.Overshoot)
+	end
+	if defaultState.KillCues then
+		self:_RunInternal("SetGlobalCueSetting", "KillCues", defaultState.KillCues)
+	end
+	if defaultState.Tilt then
+		for tilt, selectors in defaultState.Tilt do
+			for _, selector in selectors do
+				if isValidSelector(selector) then
+					self:_RunInternal("Tilt", tilt, selector)
+				end
+			end
+		end
+	end
+	if defaultState.Pan then
+		for tilt, selectors in defaultState.Pan do
+			for _, selector in selectors do
+				if isValidSelector(selector) then
+					self:_RunInternal("Pan", tilt, selector)
+				end
+			end
+		end
+	end
+	if defaultState.MotorSpeed and self.Lookups.motorSpeeds and self.Lookups.motorSpeeds[defaultState.MotorSpeed] then
+		self:_RunInternal("MotorSpeed", self.Lookups.motorSpeeds[defaultState.MotorSpeed])
+	end
+	if defaultState.Actions then
+		for actionName, param in defaultState.Actions do
+			self:_RunInternal("Action", actionName, param)
+		end
+	end
+	if defaultState.BeamMode then
+		self:_RunInternal("BeamMode", defaultState.BeamMode)
+	end
+	if defaultState.BeamThickness then
+		self:_RunInternal("BeamThickness", defaultState.BeamThickness)
+	end
+	if defaultState.Follow then
+		if typeof(defaultState.Follow) == "string" then
+			self:_RunInternal("Follow", followPointsFolder:FindFirstChild(defaultState.Follow))
+		else
+			self:_RunInternal("Follow", defaultState.Follow)
+		end
+	end
+	if defaultState.GoboSpread then
+		self:_RunInternal("GoboSpread", defaultState.GoboSpread)
+	end
+	if defaultState.GoboRotate then
+		self:_RunInternal("RotateGobo", 1, "Odd")
+		self:_RunInternal("RotateGobo", -1, "Even")
+	end
+end
+
+function Panel:_GetAndVerifySettings()
+	local areSettingsOk, Settings = pcall(require, self.Folder:FindFirstChild("Settings"))
+
+	if not areSettingsOk then
+		local errorMessage =
+			`Something went wrong while trying to read the settings. Please check that they're correct. Look for red or orange lines.`
+		self.ButtonUpdater:ShowError(errorMessage)
+		error(errorMessage)
+	end
+	local errorState, errorMessage1, errorMessage2 = SettingsManager.VerifySettings(Settings)
+	if errorState == "error" then
+		self.ButtonUpdater:ShowError(errorMessage1)
+		error(errorMessage2)
+	elseif errorState == "warning" then
+		local warning = "Some settings are not correct or are missing:"
+		for _, warningMessage in errorMessage1 do
+			warning = warning .. "\n" .. warningMessage
+		end
+		self.ButtonUpdater:ShowWarning(warning)
+	end
+
+	if Settings.DefaultState and not Settings.StartTilt then
+		if Settings.DefaultState.Tilt then
+			for angles, selectors in Settings.DefaultState.Tilt do
+				if table.find(selectors, "All") then
+					Settings.StartTilt = angles
+					break
+				end
+			end
+		end
+	end
+	if Settings.DefaultState and not Settings.StartPan then
+		if Settings.DefaultState.Pan then
+			for angles, selectors in Settings.DefaultState.Pan do
+				if table.find(selectors, "All") then
+					Settings.StartPan = angles
+					break
+				end
+			end
+		end
+	end
+
+	return Settings
+end
+
+function Panel:_UpdateLabels()
+	local topbarName = self.ButtonUpdater.Buttons.Other.TopbarName
+	if topbarName and topbarName.Text == "Lights" then
+		topbarName.Text = self.Folder.Name
+	end
+	local versionLabel = self.ButtonUpdater.Buttons.Other.Version
+	if versionLabel then
+		versionLabel.Text = UpdateChecker.formatVersion(Version)
+	end
+	local aboutVersionLabel = self.ButtonUpdater.Buttons.Other.ScriptVersion
+	if aboutVersionLabel then
+		aboutVersionLabel.Text = UpdateChecker.formatVersion(Version)
+	end
+	local scriptRelaseDate = self.ButtonUpdater.Buttons.Other.ScriptReleaseDate
+	if scriptRelaseDate then
+		scriptRelaseDate.Text = `Released on {UpdateChecker.formatDate(Version)}`
+	end
+end
+
+function Panel:_CheckForUpdate()
+	local checkForUpdatesSetting = if self.Settings.CheckForUpdates ~= nil
+		then self.Settings.CheckForUpdates
+		else GlobalSettings.CheckForUpdates
+	if not checkForUpdatesSetting then
+		return
+	end
+	if game.GameId == 0 or game.CreatorId == 0 or game.CreatorId == 998796 then
+		return
+	end -- 998796 is the Templates account
+	task.spawn(function()
+		local canGetNewestVersion = HttpService.HttpEnabled
+		if not canGetNewestVersion then
+			return self.ButtonUpdater:ShowWarning(
+				"GLights can't check for updates.\n\nEnable HTTP Requests in Game Settings > Security to be notified about updates."
+			)
+		end
+		local updateInformation = UpdateChecker.getUpdateInformation("glights", Version)
+		if updateInformation then
+			if updateInformation.update then
+				self.ButtonUpdater:ShowUpdateNotification()
+				if updateInformation.update.isImportant then
+					self.ButtonUpdater:ShowUpdateFrame()
+				end
+				for _, update in updateInformation.update.updates do
+					local template = script.UpdateTemplate:Clone()
+					local lineTemplate = template.Changelog.Item
+					template.Version.LogoVersion.Version.Text = update.version
+					template.Version.ReleaseDate.Text = `Released on {update.releaseDate}`
+					for _, changelogEntry in update.changelog do
+						local line = lineTemplate:Clone()
+						line.Text = `• {changelogEntry}`
+						line.Parent = template.Changelog
+					end
+					lineTemplate:Destroy()
+					template.Parent = self.ButtonUpdater.Buttons.Other.UpdateMessageArea
+				end
+				if
+					updateInformation.update.additionalUpdates > 0
+					and self.ButtonUpdater.Buttons.Other.AdditionalUpdates
+				then
+					self.ButtonUpdater.Buttons.Other.AdditionalUpdates.Text =
+						`{updateInformation.update.additionalUpdates}{if updateInformation.update.additionalUpdates
+								== 1
+							then "s"
+							else ""} more updates available`
+					self.ButtonUpdater.Buttons.Other.AdditionalUpdates.Parent.Visible = true
+				end
+				if
+					(updateInformation.update.additionalUpdates + #updateInformation.update.updates) > 1
+					and self.ButtonUpdater.Buttons.Other.UpdateTitle
+				then
+					self.ButtonUpdater.Buttons.Other.UpdateTitle.Text = "Updates available"
+				end
+			end
+
+			if updateInformation.announcement then
+				self.ButtonUpdater:ShowAnnouncementNotification()
+				if updateInformation.announcement.isImportant then
+					self.ButtonUpdater:ShowAnnouncementFrame()
+				end
+				local label = self.ButtonUpdater.Buttons.Other.AnnouncementMessage
+				if label then
+					label.Text = updateInformation.announcement.content
+				end
+				local titleLabel = self.ButtonUpdater.Buttons.Other.AnnouncementTitle
+				if titleLabel then
+					titleLabel.Text = updateInformation.announcement.title
+				end
+			end
+		end
+		return
+	end)
+end
+
+function Panel:_SetCoreOrder()
+	local coreNames = {}
+	local coreFolders = {}
+	for _, fixturesFolder in self.Folder:GetChildren() do
+		if not fixturesFolder:IsA("Folder") then
+			continue
+		end
+		local folderName = fixturesFolder.Name
+		local coreName = string.sub(folderName, 1, 1)
+		if not coreFolders[coreName] then
+			coreFolders[coreName] = {}
+			self.ActiveCores[coreName] = true
+		end
+		table.insert(coreFolders[coreName], fixturesFolder)
+		if not table.find(coreNames, coreName) then
+			table.insert(coreNames, coreName)
+		end
+	end
+	self.CoreFolders = coreFolders
+
+	table.sort(coreNames)
+	self.CoreOrder = coreNames
+end
+
+function Panel:_SetCores()
+	for coreName, folders in self.CoreFolders do
+		local model = self.Settings.BaseModel
+		local fixtureCount = 0
+		for _, folder in folders do
+			if folder:GetAttribute("Model") then
+				model = folder:GetAttribute("Model")
+			end
+			fixtureCount += #folder:GetChildren()
+		end
+		local thisCoreSettings = deepCopy(self.Settings)
+		thisCoreSettings.BaseModel = model
+		thisCoreSettings.Fixtures = folders
+		thisCoreSettings.UniqueName = `{self.Folder.Name}{coreName}`
+		self.Cores[coreName] = Core.new(thisCoreSettings)
+		if fixtureCount == 0 then
+			self.ButtonUpdater:ShowWarning(
+				`The '{coreName}' group and its folders don't have any lights, you may delete the group if it is not being used`
+			)
+		end
+	end
+end
+
+function Panel:_RunInternal(funcName, ...)
+	for coreName, core in self.Cores do
+		if self.ActiveCores[coreName] then
+			core.Changer[funcName](core.Changer, ...)
+		end
+	end
+end
+
+local function addColorButton(panel, color, isGlobal)
+	local hex = color:ToHex()
+	if panel.CustomColorButtons[hex] then
+		return
+	end
+	local takenUpSize = #panel.ButtonUpdater.Buttons.ColorPicker.List:GetChildren() * 52
+	if takenUpSize > panel.ButtonUpdater.Buttons.ColorPicker.List.AbsoluteSize.X then
+		return
+	end
+	local button = script.CustomColour:Clone()
+	button.BackgroundColor3 = color
+	button:SetAttribute("Global", isGlobal)
+	panel.CustomColorButtons[hex] = button
+	button.Parent = panel.ButtonUpdater.Buttons.ColorPicker.List
+end
+
+local function removeColorButtons(panel, hex)
+	if not panel.CustomColorButtons[hex] then
+		return
+	end
+	panel.CustomColorButtons[hex]:Destroy()
+	panel.CustomColorButtons[hex] = nil
+end
+
+function Panel:HandleAction(player, actionName, arg1, arg2)
+	local shouldProxy = string.sub(actionName, 1, 1) ~= "_"
+	if shouldProxy then
+		self:_RunInternal(actionName, arg1, arg2)
+	elseif actionName == ActionCodes.LEFT_CLICK_COLOR then
+		local selectionMode = arg2 or self.ColorSelectionMode
+		local color = if typeof(arg1) == "string" then self.Lookups.colours[arg1] else arg1
+		if selectionMode == "All" then
+			self:_RunInternal("Color", color)
+		elseif selectionMode == "Combo" then
+			self:_RunInternal("Color", color, "Odd")
+		else
+			self:_RunInternal("SetGlobalCueSetting", "SecondaryColor", color)
+		end
+	elseif actionName == ActionCodes.RIGHT_CLICK_COLOR then
+		local selectionMode = arg2 or self.ColorSelectionMode
+		local color = if typeof(arg1) == "string" then self.Lookups.colours[arg1] else arg1
+		if selectionMode == "All" then
+			self:_RunInternal("Color", color)
+		elseif selectionMode == "Combo" then
+			self:_RunInternal("Color", color, "Even")
+		else
+			self:_RunInternal("SetGlobalCueSetting", "SecondaryColor", color)
+		end
+	elseif actionName == ActionCodes.TOGGLE_CORE then
+		local newActiveValue = if arg2 ~= nil then arg2 else not self.ActiveCores[arg1]
+		self.ActiveCores[arg1] = newActiveValue
+		self.ButtonUpdater:UpdateCoreSelectorButtons(self.ActiveCores)
+	elseif actionName == ActionCodes.COLOR_MODE then
+		self.ColorSelectionMode = arg1
+		self.ButtonUpdater:UpdateColorComboButtons(arg1)
+	elseif actionName == ActionCodes.SWITCH_COLORS then
+		for coreName, core in self.Cores do
+			if self.ActiveCores[coreName] then
+				local firstAID = core.Indexer:Get("Odd")[1]
+				local firstBID = core.Indexer:Get("Even")[1]
+				local aColor = core.Changer.State.Color[firstAID]
+				local bColor = core.Changer.State.Color[firstBID]
+				core.Changer:Color(bColor, "Odd")
+				core.Changer:Color(aColor, "Even")
+			end
+		end
+	elseif actionName == ActionCodes.GOBO_ROTATE then
+		local enable = arg1
+		if enable then
+			self:_RunInternal("RotateGobo", 1, "Odd")
+			self:_RunInternal("RotateGobo", -1, "Even")
+		else
+			self:_RunInternal("RotateGobo", 0)
+		end
+	elseif actionName == ActionCodes.FOLLOW_SPOTLIGHT then
+		if arg1 == nil then
+			self:_RunInternal("Follow", nil)
+		elseif typeof(arg1) == "number" then
+			local object = FollowPointsManager.Get(arg1)
+			self:_RunInternal("Follow", object)
+		elseif arg1:IsA("Player") then
+			local part = arg1.Character.HumanoidRootPart
+			self:_RunInternal("Follow", part)
+		end
+	elseif actionName == ActionCodes.ADD_CUSTOM_COLOR then
+		local color = arg1
+		local isGlobal = arg2
+		if isGlobal then
+			for _, panel in Panel._AllPanelsByModel do
+				addColorButton(panel, color, isGlobal)
+			end
+		else
+			addColorButton(self, color, isGlobal)
+		end
+	elseif actionName == ActionCodes.REMOVE_CUSTOM_COLOR then
+		local hex = arg1:ToHex()
+		local isGlobal = arg2
+		if isGlobal then
+			for _, panel in Panel._AllPanelsByModel do
+				removeColorButtons(panel, hex)
+			end
+		else
+			removeColorButtons(self, hex)
+		end
+	elseif actionName == ActionCodes.CHANGE_CUSTOM_COLOR_GLOBAL then
+		local color = arg1
+		local hex = color:ToHex()
+		local isNowGlobal = arg2
+		if isNowGlobal then
+			for _, panel in Panel._AllPanelsByModel do
+				if panel.CustomColorButtons[hex] then
+					panel.CustomColorButtons[hex]:SetAttribute("Global", isNowGlobal)
+				else
+					addColorButton(panel, arg1, isNowGlobal)
+				end
+			end
+		else
+			for model, panel in Panel._AllPanelsByModel do
+				if model == self.Panel then
+					self.CustomColorButtons[hex]:SetAttribute("Global", false)
+				else
+					removeColorButtons(panel, hex)
+				end
+			end
+		end
+	elseif actionName == ActionCodes.CUE3_GROUPS then
+		for _, core in self.Cores do
+			core.Changer:SetCueSetting("State.Cue3", "Groups", tonumber(arg1) or 2)
+		end
+	elseif actionName == ActionCodes.OVERSHOOT then
+		self:_RunInternal("SetGlobalCueSetting", "Overshoot", arg1)
+	elseif actionName == ActionCodes.GROUP_RANDOM then
+		self:_RunInternal("SetGlobalCueSetting", "GroupRandom", arg1)
+	elseif actionName == ActionCodes.KILL_CUES then
+		self:_RunInternal("SetGlobalCueSetting", "KillCues", arg1)
+	elseif actionName == ActionCodes.GROUP_FIXTURES then
+		local group = if arg1 then "WholeModels" else "Default"
+		self:_RunInternal("SetLensGroup", group)
+	elseif actionName == ActionCodes.TOGGLE_GROUP_FIXTURES then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			if core.Changer:GetLensGroup() == "Default" then
+				core.Changer:SetLensGroup("WholeModels")
+			else
+				core.Changer:SetLensGroup("Default")
+			end
+		end
+	elseif actionName == ActionCodes.TOGGLE_CUE then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			if core.Changer.State.ActiveCues[arg1] or core.Changer.State.ActivePhysicsCues[arg1] then
+				core.Changer:Cue(arg1, false)
+			else
+				core.Changer:Cue(arg1, true)
+			end
+		end
+	elseif actionName == ActionCodes.TOGGLE_LOOP_CUES then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:LoopCues(not core.Changer.State.LoopCues)
+		end
+	elseif actionName == ActionCodes.TOGGLE_ANIMATE_GRADIENTS then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:AnimatedGradients(not core.Changer.State.AnimatedGradients)
+		end
+	elseif actionName == ActionCodes.TOGGLE_OVERSHOOT then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:SetGlobalCueSetting("Overshoot", not core.Changer.State.GlobalCueSettings.Overshoot)
+		end
+	elseif actionName == ActionCodes.TOGGLE_KILL_CUES then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:SetGlobalCueSetting("KillCues", not core.Changer.State.GlobalCueSettings.KillCues)
+		end
+	elseif actionName == ActionCodes.TOGGLE_GROUP_RANDOM then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:SetGlobalCueSetting("GroupRandom", not core.Changer.State.GlobalCueSettings.GroupRandom)
+		end
+	elseif actionName == ActionCodes.TOGGLE_SMOOTH_COLOR then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:SmoothColor(not core.Changer.State.SmoothColor)
+		end
+	elseif actionName == ActionCodes.TOGGLE_GOBO_ROTATE then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			if core.Changer.State.GoboDirection[1] ~= nil then
+				core.Changer:RotateGobo(0)
+			else
+				core.Changer:RotateGobo(1, "Odd")
+				core.Changer:RotateGobo(-1, "Even")
+			end
+		end
+	elseif actionName == ActionCodes.ADJUST_DIMNESS then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:Dimness(core.Changer.State.Dimness + arg1)
+		end
+	elseif actionName == ActionCodes.ADJUST_THICKNESS then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:BeamThickness(core.Changer.State.BeamThickness + arg1)
+		end
+	elseif actionName == ActionCodes.ADJUST_GOBO_SPREAD then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:GoboSpread(core.Changer.State.GoboSpread + arg1)
+		end
+	elseif actionName == ActionCodes.ADJUST_CUE_SPEED then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:CueSpeed(1 / core.Changer.State.CueSpeed + arg1)
+		end
+	elseif actionName == ActionCodes.ADJUST_FADE_SPEED then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:FadeSpeed(core.Changer.State.FadeSpeed + arg1)
+		end
+	elseif actionName == ActionCodes.MOTOR_SPEED_NAMED then
+		local speed = self.Lookups.motorSpeeds[arg1]
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			core.Changer:MotorSpeed(speed)
+		end
+	elseif actionName == ActionCodes.ADJUST_TILT then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			local groupedByAngle = {}
+			for id, angle in core.Changer.State.Tilt do
+				if not groupedByAngle[angle] then
+					groupedByAngle[angle] = {}
+				end
+				table.insert(groupedByAngle[angle], id)
+			end
+			for angle, ids in groupedByAngle do
+				core.Changer:Tilt(angle + arg1, ids)
+			end
+		end
+	elseif actionName == ActionCodes.ADJUST_PAN then
+		for coreName, core in self.Cores do
+			if not self.ActiveCores[coreName] then
+				continue
+			end
+			local groupedByAngle = {}
+			for id, angle in core.Changer.State.Pan do
+				if not groupedByAngle[angle] then
+					groupedByAngle[angle] = {}
+				end
+				table.insert(groupedByAngle[angle], id)
+			end
+			for angle, ids in groupedByAngle do
+				core.Changer:Pan(angle + arg1, ids)
+			end
+		end
+	elseif actionName == ActionCodes.CLOSE_WARNING then
+		self.ButtonUpdater:CloseWarning()
+	elseif actionName == ActionCodes.CLOSE_UPDATE then
+		for _, panel in Panel._AllPanelsByModel do
+			panel.ButtonUpdater:CloseUpdate()
+		end
+	elseif actionName == ActionCodes.SHOW_UPDATE then
+		self.ButtonUpdater:ShowUpdateFrame()
+	elseif actionName == ActionCodes.SHOW_ANNOUNCEMENT then
+		self.ButtonUpdater:ShowAnnouncementFrame()
+	elseif actionName == ActionCodes.CLOSE_ANNOUNCEMENT then
+		for _, panel in Panel._AllPanelsByModel do
+			panel.ButtonUpdater:CloseAnnouncement()
+		end
+	elseif actionName == ActionCodes.DONATE then
+		MarketplaceService:PromptGamePassPurchase(player, 1231991042)
+	end
+end
+
+function Panel:ConnectEvents()
+	for coreName, core in self.Cores do
+		core.Changer.Events.SmoothColorChanged:Connect(function()
+			self.ButtonUpdater:UpdateSmoothColorButton()
+		end)
+		core.Changer.Events.LoopCuesChanged:Connect(function()
+			self.ButtonUpdater:UpdateLoopCuesButton()
+		end)
+		core.Changer.Events.AnimatedGradientsChanged:Connect(function()
+			self.ButtonUpdater:UpdateAnimatedGradientsButton()
+		end)
+		core.Changer.Events.FadeSpeedChanged:Connect(function()
+			self.ButtonUpdater:UpdateFadeSpeedButtons()
+		end)
+		core.Changer.Events.CueSpeedChanged:Connect(function()
+			self.ButtonUpdater:UpdateCueSpeedButtons()
+		end)
+		core.Changer.Events.CueActivated:Connect(function(cueName)
+			self.ButtonUpdater:UpdateCueButton(cueName)
+		end)
+		core.Changer.Events.CueDeactivated:Connect(function(cueName)
+			self.ButtonUpdater:UpdateCueButton(cueName)
+		end)
+		core.Changer.Events.BeamThicknessChanged:Connect(function(newThickness)
+			self.ButtonUpdater:UpdateThicknessSlider(newThickness, coreName)
+		end)
+		core.Changer.Events.DimnessChanged:Connect(function(newDimness)
+			self.ButtonUpdater:UpdateDimnessSlider(newDimness, coreName)
+		end)
+		core.Changer.Events.GoboSpreadChanged:Connect(function(newSpread)
+			self.ButtonUpdater:UpdateGoboSpreadSlider(newSpread, coreName)
+		end)
+		core.Changer.Events.MotorSpeedChanged:Connect(function()
+			self.ButtonUpdater:UpdateMotorSpeedButtons()
+		end)
+		core.Changer.Events.BeamModeChanged:Connect(function()
+			self.ButtonUpdater:UpdateBeamModeButtons()
+		end)
+		core.Changer.Events.CueSettingChanged:Connect(function(cueName, settingName, value)
+			if cueName == "State.Cue3" and settingName == "Groups" then
+				self.ButtonUpdater:UpdateCue3Groups(value)
+			end
+		end)
+		core.Changer.Events.GlobalCueSettingChanged:Connect(function(settingName)
+			if settingName == "Overshoot" then
+				self.ButtonUpdater:UpdateOvershootButton()
+			elseif settingName == "GroupRandom" then
+				self.ButtonUpdater:UpdateGroupRandomButton()
+			elseif settingName == "KillCues" then
+				self.ButtonUpdater:UpdateKillCuesButton()
+			end
+		end)
+		core.Changer.Events.RotateGoboChanged:Connect(function()
+			self.ButtonUpdater:UpdateGoboRotateButton()
+		end)
+		core.Changer.Events.TurnedOn:Connect(function()
+			self.ButtonUpdater:UpdateOnOffButtons()
+		end)
+		core.Changer.Events.TurnedOff:Connect(function()
+			self.ButtonUpdater:UpdateOnOffButtons()
+		end)
+		core.Changer.Events.FadedOn:Connect(function()
+			self.ButtonUpdater:UpdateOnOffButtons()
+		end)
+		core.Changer.Events.FadedOff:Connect(function()
+			self.ButtonUpdater:UpdateOnOffButtons()
+		end)
+		core.Changer.Events.ActionRan:Connect(function(actionName)
+			local actionModule = core.Changer._ActionModules[actionName]
+			if actionModule.ForcesOnOff ~= nil then
+				task.defer(function()
+					self.ButtonUpdater:UpdateOnOffButtons()
+				end)
+			end
+		end)
+		core.Changer.Events.LensGroupChanged:Connect(function()
+			self.ButtonUpdater:UpdateGroupFixturesButton()
+		end)
+	end
+
+	self.ButtonUpdater:UpdateOnOffButtons()
+	self.ButtonUpdater:UpdateSmoothColorButton()
+	self.ButtonUpdater:UpdateLoopCuesButton()
+	self.ButtonUpdater:UpdateAnimatedGradientsButton()
+	self.ButtonUpdater:UpdateCoreSelectorButtons(self.ActiveCores)
+	self.ButtonUpdater:UpdateColorComboButtons(self.ColorSelectionMode)
+	self.ButtonUpdater:UpdateFadeSpeedButtons()
+	self.ButtonUpdater:UpdateCueSpeedButtons()
+	self.ButtonUpdater:UpdateBeamModeButtons()
+	self.ButtonUpdater:UpdateMotorSpeedButtons()
+	self.ButtonUpdater:UpdateGoboRotateButton()
+	self.ButtonUpdater:UpdateOvershootButton()
+	self.ButtonUpdater:UpdateKillCuesButton()
+	self.ButtonUpdater:UpdateGroupRandomButton()
+	self.ButtonUpdater:UpdateGroupFixturesButton()
+	for cueName, _ in self.ButtonUpdater.Buttons.CueButtons do
+		self.ButtonUpdater:UpdateCueButton(cueName)
+	end
+	if
+		self.Settings.DefaultState
+		and self.Settings.DefaultState.CueSettings
+		and self.Settings.DefaultState.CueSettings["State.Cue3"]
+		and self.Settings.DefaultState.CueSettings["State.Cue3"].Groups
+	then
+		self.ButtonUpdater:UpdateCue3Groups(self.Settings.DefaultState.CueSettings["State.Cue3"].Groups)
+	end
+end
+
+function Panel.Run(folderName, functionName, ...)
+	local panel = Panel._ByFolderName[folderName]
+	if not panel then
+		return warn("[[ GLights ]]: Tried running a function for folder", folderName, "but it's missing")
+	end
+	for _, core in panel.Cores do
+		core.Changer[functionName](core.Changer, ...)
+	end
+	return
+end
+
+function Panel.RunGroup(folderName, groupName, functionName, ...)
+	local panel = Panel._ByFolderName[folderName]
+	if not panel then
+		return warn("[[ GLights ]]: Tried running a function for folder", folderName, "but it's missing")
+	end
+	local core = panel.Cores[groupName]
+	core.Changer[functionName](core.Changer, ...)
+	return
+end
+
+eventsFolder.RunAction.OnServerEvent:Connect(function(player: Player, panel, ...)
+	local panelData = Panel._AllPanelsByModel[panel]
+	if not panelData then
+		return
+	end
+	if not panelData.Whitelist:isWhitelisted(player) then
+		return
+	end
+	panelData:HandleAction(player, ...)
+end)
+
+eventsFolder.IsWhitelisted.OnServerInvoke = function(player: Player, panel)
+	local panelData = Panel._AllPanelsByModel[panel]
+	if not panelData then
+		return
+	end
+	return panelData.Whitelist:isWhitelisted(player)
+end
+
+return Panel

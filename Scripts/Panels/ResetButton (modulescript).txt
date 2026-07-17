@@ -1,0 +1,69 @@
+local ResetButton = {}
+
+ResetButton._ByPanel = {}
+
+local SettingsManager = require("./SettingsManager")
+local Whitelister = require(script.Parent.Whitelister)
+local getGlobalSettings = require(script.Parent.Parent.Core.getGlobalSettings)
+local GlobalSettings = getGlobalSettings()
+local Core = require(script.Parent.Parent.Core.Main)
+local UpdateChecker = require(script.Parent.UpdateChecker)
+local Version = require(script.Parent.Parent.Version)
+
+local resetButtonsFolder = script.Parent.Parent.Parent.ResetButtons
+local eventsFolder = script.Parent.Events
+
+function ResetButton.Init()
+	local allPanels = {}
+	for _, thing in resetButtonsFolder:GetChildren() do
+		if thing:IsA("Part") then
+			table.insert(allPanels, thing)
+			thing:AddTag(`GLightsResetButton{script.Parent.ID.Value}`)
+			thing.Display.Background.Topbar.Info.Version.Version.Text = UpdateChecker.formatVersion(Version)
+		end
+	end
+
+	local whitelist = if resetButtonsFolder:FindFirstChild("Whitelist")
+		then require(resetButtonsFolder:FindFirstChild("Whitelist"))
+		else GlobalSettings.Whitelist
+	local whitelistInstance = Whitelister.new(SettingsManager.getWhitelist(whitelist))
+	eventsFolder.ResetButtonPressed.OnServerEvent:Connect(function(player: Player, rightClick: boolean)
+		if not whitelistInstance:isWhitelisted(player) then
+			return
+		end
+		for _, core in Core._AllCores do
+			if rightClick then
+				core.Changer:Reset()
+			else
+				core.Changer:HardReset()
+			end
+		end
+	end)
+	eventsFolder.IsResetButtonWhitelisted.OnServerInvoke = function(player: Player)
+		return whitelistInstance:isWhitelisted(player)
+	end
+	whitelistInstance.whitelistStatusChanged:Connect(function(player, isWhitelisted)
+		eventsFolder.WhitelistStatusChanged:FireClient(player, allPanels, isWhitelisted)
+	end)
+end
+
+function ResetButton.SetupButton(panel)
+	local button = panel.Display.Background.Reset
+	local conn1 = button.MouseButton1Click:Connect(function()
+		eventsFolder.ResetButtonPressed:FireServer(false)
+	end)
+	local conn2 = button.MouseButton2Click:Connect(function()
+		eventsFolder.ResetButtonPressed:FireServer(true)
+	end)
+	ResetButton._ByPanel[panel] = { conn1, conn2 }
+end
+
+function ResetButton.Disconnect(panel)
+	if ResetButton._ByPanel[panel] then
+		for _, connection in ResetButton._ByPanel[panel] do
+			connection:Disconnect()
+		end
+	end
+end
+
+return ResetButton

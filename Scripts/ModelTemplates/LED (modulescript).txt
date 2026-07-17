@@ -1,0 +1,10 @@
+return {
+	CanHaveBeam = false,
+	CanHaveMotors = false,
+	CanHaveLight = true,
+	CanFollow = false,
+
+	GetLens = function(model)
+		return model
+	end,
+}

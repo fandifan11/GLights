@@ -1,0 +1,42 @@
+return {
+	CanHaveBeam = true,
+	DefaultBeamMode = "Beam",
+	BeamDirection = Vector3.new(0, 1, 0),
+	BeamLength = 50,
+	BeamWidth0 = 0.4,
+	BeamWidth1 = 7,
+
+	CanHaveMotors = true,
+	HasTiltMotor = true,
+	HasPanMotor = false,
+	CanFollow = false,
+
+	IsMultilens = true,
+	GetLenses = function(model)
+		return model.Head.Lens:GetChildren()
+	end,
+
+	CanHaveLight = true,
+	LightTemplate = {
+		Type = "SpotLight",
+		Angle = 45,
+		Face = "Top",
+		Range = 60,
+		Brightness = 0.1,
+	},
+
+	AddMotors = function(model, motor, weld, unanchor)
+		motor(
+			"Tilt",
+			model.Base.Base,
+			model.Head.Head,
+			CFrame.new(0, 0.3, 0) * CFrame.Angles(0, math.rad(-90), math.rad(180)),
+			CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(90), math.rad(180))
+		)
+		for _, lens in model.Head.Lens:GetChildren() do
+			weld(model.Head.Head, lens)
+			unanchor(lens)
+		end
+		unanchor(model.Head.Head)
+	end,
+}

@@ -1,0 +1,229 @@
+local Indexer = {}
+Indexer.__index = Indexer
+
+local TemplateManager = require(script.Parent.TemplateManager)
+
+function Indexer.new(folders, ID, serverIds, modelTemplateName)
+	local self = setmetatable({}, Indexer)
+
+	self.LensIDToModelID = {}
+	self.ModelScales = {}
+	self.LensGroups = {}
+	self.SelectedLensGroup = "Default"
+	self._IDToNumber = {}
+	self._IDToModel = {}
+	self.Motors = {
+		All = {},
+		Odd = {},
+		Even = {},
+		Numbered = {},
+		_IDToNumber = {},
+		_IDToModel = {},
+		TotalNumberCount = 0,
+	}
+	self.InvertPan = {}
+	self.InvertPanArray = {}
+
+	local template = TemplateManager.GetTemplate(modelTemplateName)
+
+	local isMultilens = template.IsMultilens
+	local getLensOrLensesFunction = if isMultilens then template.GetLenses else template.GetLens
+
+	if serverIds then
+		self.LensGroups = serverIds.LensGroups
+		self.SelectedLensGroup = serverIds.SelectedLensGroup
+		self.ModelScales = serverIds.ModelScales
+		self.Motors = serverIds.Motors
+		self.LensIDToModelID = serverIds.LensIDToModelID
+
+		for _, id in serverIds.InvertPanArray do
+			self.InvertPan[id] = true
+		end
+	else
+		local lensId = 1
+		local motorId = 1
+
+		local defaultGroup = {
+			All = {},
+			Odd = {},
+			Even = {},
+			Numbered = {},
+			TotalNumberCount = 0,
+			_IDToNumber = {},
+		}
+
+		local wholeModelGroup = {
+			All = {},
+			Odd = {},
+			Even = {},
+			Numbered = {},
+			TotalNumberCount = 0,
+			_IDToNumber = {},
+		}
+
+		local function addLens(lensPart, fixtureNumber, modelID)
+			local lensNumber = if isMultilens then tonumber(lensPart.Name) else fixtureNumber
+			if not lensNumber then
+				warn("[[ GLights ]]: Lens", lensPart, "doesn't have a number and will not be used")
+				return
+			end
+			lensPart:SetAttribute("ID", lensId)
+
+			table.insert(defaultGroup.All, lensId)
+			table.insert(wholeModelGroup.All, lensId)
+			if lensNumber % 2 == 0 then
+				table.insert(defaultGroup.Even, lensId)
+			else
+				table.insert(defaultGroup.Odd, lensId)
+			end
+			if fixtureNumber % 2 == 0 then
+				table.insert(wholeModelGroup.Even, lensId)
+			else
+				table.insert(wholeModelGroup.Odd, lensId)
+			end
+			if not defaultGroup.Numbered[lensNumber] then
+				defaultGroup.Numbered[lensNumber] = {}
+			end
+			table.insert(defaultGroup.Numbered[lensNumber], lensId)
+			if not wholeModelGroup.Numbered[fixtureNumber] then
+				wholeModelGroup.Numbered[fixtureNumber] = {}
+			end
+			table.insert(wholeModelGroup.Numbered[fixtureNumber], lensId)
+			defaultGroup._IDToNumber[lensId] = lensNumber
+			wholeModelGroup._IDToNumber[lensId] = fixtureNumber
+			if defaultGroup.TotalNumberCount < lensNumber then
+				defaultGroup.TotalNumberCount = lensNumber
+			end
+			if wholeModelGroup.TotalNumberCount < fixtureNumber then
+				wholeModelGroup.TotalNumberCount = fixtureNumber
+			end
+			self._IDToModel[lensId] = lensPart
+			self.LensIDToModelID[lensId] = modelID
+			lensId += 1
+		end
+
+		for _, folder in folders do
+			for _, fixture in folder:GetChildren() do
+				fixture:SetAttribute("ID", motorId)
+				fixture:AddTag(ID)
+				self.Motors._IDToModel[motorId] = fixture
+				if fixture:IsA("Model") and fixture:GetScale() ~= 1 then
+					self.ModelScales[motorId] = fixture:GetScale()
+				end
+
+				local fixtureNumber = tonumber(string.sub(fixture.Name, 4))
+				if not fixtureNumber then
+					warn(
+						"[[ GLights ]]: Fixture",
+						fixture,
+						"doesn't belong to any group (isn't named Fix0 where 0 is a number) and won't be used"
+					)
+					continue
+				end
+
+				table.insert(self.Motors.All, motorId)
+				if fixtureNumber % 2 == 0 then
+					table.insert(self.Motors.Even, motorId)
+				else
+					table.insert(self.Motors.Odd, motorId)
+				end
+				if not self.Motors.Numbered[fixtureNumber] then
+					self.Motors.Numbered[fixtureNumber] = {}
+				end
+				table.insert(self.Motors.Numbered[fixtureNumber], motorId)
+				self.Motors._IDToNumber[motorId] = fixtureNumber
+				if self.Motors.TotalNumberCount < fixtureNumber then
+					self.Motors.TotalNumberCount = fixtureNumber
+				end
+				if fixture:GetAttribute("Invert") then
+					self.InvertPan[motorId] = true
+					table.insert(self.InvertPanArray, motorId)
+				end
+
+				if isMultilens then
+					for _, lens in getLensOrLensesFunction(fixture) do
+						addLens(lens, fixtureNumber, motorId)
+					end
+				else
+					addLens(getLensOrLensesFunction(fixture), fixtureNumber, motorId)
+				end
+				motorId += 1
+			end
+		end
+
+		self.LensGroups.Default = defaultGroup
+		if isMultilens then
+			self.LensGroups.WholeModels = wholeModelGroup
+		end
+
+		for _, group in self.LensGroups do
+			for i = 1, group.TotalNumberCount do
+				if not group.Numbered[i] then
+					group.Numbered[i] = {}
+				end
+			end
+		end
+
+		for i = 1, self.Motors.TotalNumberCount do
+			if not self.Motors.Numbered[i] then
+				self.Motors.Numbered[i] = {}
+			end
+		end
+	end
+
+	return self
+end
+
+function Indexer:GetTotalNumberCount(lensGroup)
+	local group = self.LensGroups[lensGroup or self.SelectedLensGroup]
+	return group.TotalNumberCount
+end
+
+function Indexer:Get(fixtureIdsOrSelector, lensGroup)
+	local group = self.LensGroups[lensGroup or self.SelectedLensGroup]
+	if typeof(fixtureIdsOrSelector) == "table" then
+		return fixtureIdsOrSelector
+	elseif fixtureIdsOrSelector == nil or fixtureIdsOrSelector == "All" then
+		return group.All
+	elseif typeof(fixtureIdsOrSelector) == "number" then
+		return group.Numbered[fixtureIdsOrSelector]
+	elseif fixtureIdsOrSelector == "Odd" then
+		return group.Odd
+	elseif fixtureIdsOrSelector == "Even" then
+		return group.Even
+	elseif fixtureIdsOrSelector == "Numbered" then
+		return group.Numbered
+	end
+	return group.All
+end
+
+function Indexer:GetMotors(fixtureIdsOrSelector)
+	if typeof(fixtureIdsOrSelector) == "table" then
+		return fixtureIdsOrSelector
+	elseif fixtureIdsOrSelector == nil or fixtureIdsOrSelector == "All" then
+		return self.Motors.All
+	elseif typeof(fixtureIdsOrSelector) == "number" then
+		return self.Motors.Numbered[fixtureIdsOrSelector]
+	elseif fixtureIdsOrSelector == "Odd" then
+		return self.Motors.Odd
+	elseif fixtureIdsOrSelector == "Even" then
+		return self.Motors.Even
+	elseif fixtureIdsOrSelector == "Numbered" then
+		return self.Motors.Numbered
+	end
+	return self.Motors.All
+end
+
+function Indexer:Number(fixtureIds)
+	local numbered = {}
+	local group = self.LensGroups[self.SelectedLensGroup]
+	for i = 1, group.TotalNumberCount do
+		numbered[i] = {}
+	end
+	for _, id in fixtureIds do
+		table.insert(numbered[group._IDToNumber[id]], id)
+	end
+	return numbered
+end
+
+return Indexer

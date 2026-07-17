@@ -1,0 +1,15 @@
+local function getGlobalSettings()
+	local globalSettingsScript = script.Parent.Parent.Parent:FindFirstChild("GlobalSettings")
+	if globalSettingsScript then
+		return require(globalSettingsScript)
+	else
+		local whitelist = require(script.Parent.Parent.Parent:FindFirstChild("Whitelist"))
+		return {
+			Whitelist = whitelist,
+			CheckForUpdates = true,
+			FadeReset = false,
+		}
+	end
+end
+
+return getGlobalSettings

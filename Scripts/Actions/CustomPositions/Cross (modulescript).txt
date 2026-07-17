@@ -1,0 +1,26 @@
+local Action = {}
+Action.IsPhysicsAction = true
+
+local function getPan(group, reverse)
+	local tilt = if group == "Odd" then 30 else -30
+	if reverse then
+		tilt = if tilt == 30 then -30 else 30
+	end
+	return tilt
+end
+
+function Action.Client(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixturesA = Changer.Indexer.Motors.Odd
+	local fixturesB = Changer.Indexer.Motors.Even
+	Changer:Pan(getPan("Odd", reverse), fixturesA)
+	Changer:Pan(getPan("Even", reverse), fixturesB)
+end
+
+function Action.Server(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixturesA = Changer.Indexer.Motors.Odd
+	local fixturesB = Changer.Indexer.Motors.Even
+	Changer:MarkPan(getPan("Odd", reverse), fixturesA)
+	Changer:MarkPan(getPan("Even", reverse), fixturesB)
+end
+
+return Action

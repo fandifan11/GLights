@@ -1,0 +1,50 @@
+local function waitForEverythingToLoadIn()
+	local folders = { "Custom", "FollowPoints", "Lights", "ResetButtons", "Scripts" }
+	local mainFolder = script.Parent.Parent.Parent
+
+	for _, folderName in folders do
+		mainFolder:WaitForChild(folderName, 5)
+	end
+
+	if mainFolder:FindFirstChild("Whitelist") or mainFolder:FindFirstChild("GlobalSettings") then
+		return
+	end
+	mainFolder:WaitForChild("GlobalSettings", 5)
+end
+waitForEverythingToLoadIn()
+
+local coreFolder = script.Parent
+local Core = require(coreFolder.Main)
+local cores = {}
+
+local function main()
+	local currentData = coreFolder.Events.GetCurrentData:InvokeServer()
+	for _, data in currentData do
+		task.spawn(function()
+			local core = Core.new(data.Settings, data.ID, data.IndexerIDs)
+			cores[data.ID] = core
+			core.Changer.State = data.State
+			for _, id in cores[data.ID].Indexer.Motors.All do
+				core.Changer:ApplySingleLightState(id)
+			end
+			for _, id in cores[data.ID].Indexer.LensGroups.Default.All do
+				core.Changer:ApplySingleLensState(id)
+			end
+			core.Changer:ApplyGenericState()
+		end)
+	end
+
+	for _, event in coreFolder.Events:GetChildren() do
+		if event:IsA("RemoteEvent") then
+			local name = event.Name
+			event.OnClientEvent:Connect(function(id, ...)
+				cores[id].Changer[name](cores[id].Changer, ...)
+			end)
+		end
+	end
+end
+
+if script:IsDescendantOf(workspace) then
+	main()
+end
+-- TODO: cleanup

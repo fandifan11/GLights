@@ -1,0 +1,102 @@
+local function waitForEverythingToLoadIn()
+	local folders = { "Custom", "FollowPoints", "Lights", "ResetButtons", "Scripts" }
+	local mainFolder = script.Parent.Parent.Parent
+
+	for _, folderName in folders do
+		mainFolder:WaitForChild(folderName, 5)
+	end
+
+	if mainFolder:FindFirstChild("Whitelist") or mainFolder:FindFirstChild("GlobalSettings") then
+		return
+	end
+	mainFolder:WaitForChild("GlobalSettings", 5)
+end
+waitForEverythingToLoadIn()
+
+local CollectionService = game:GetService("CollectionService")
+local UserInputService = game:GetService("UserInputService")
+
+local PANEL_TAG = `GLightsPanel{script.Parent.ID.Value}`
+local RESET_BUTTON_TAG = `GLightsResetButton{script.Parent.ID.Value}`
+
+local eventsFolder = script.Parent.Events
+
+local ButtonHandler = require(script.Parent.ButtonHandler)
+local ResetButton = require(script.Parent.ResetButton)
+
+local function whitelistStatusChanged(panelOrPanels, isWhitelisted)
+	if typeof(panelOrPanels) ~= "table" then
+		panelOrPanels = { panelOrPanels }
+	end
+	for _, panel in panelOrPanels do
+		if panel then
+			panel.Display.Enabled = isWhitelisted
+			panel.Transparency = if isWhitelisted then panel:GetAttribute("Transparency") or 0 else 1
+			local handler = ButtonHandler.GetByPanel(panel)
+			if handler then
+				handler:WhitelistStatusChanged(isWhitelisted)
+			end
+		end
+	end
+end
+
+local function setupPanel(panel)
+	local requireSuccess, panelSettings = pcall(require, panel.Parent.Settings)
+	local handler = ButtonHandler.new(panel, if requireSuccess then panelSettings.Keybinds or {} else {})
+	if UserInputService.PreferredInput == Enum.PreferredInput.KeyboardAndMouse then
+		handler:SwitchToDesktopView()
+	else
+		handler:SwitchToMobileView()
+	end
+	local isWhitelisted = eventsFolder.IsWhitelisted:InvokeServer(panel)
+	whitelistStatusChanged(panel, isWhitelisted)
+end
+
+local function destroyPanel(panel)
+	local panelInstance = ButtonHandler.GetByPanel(panel)
+	if panelInstance then
+		panelInstance:Destroy()
+	end
+end
+
+local function setupResetButton(panel)
+	ResetButton.SetupButton(panel)
+	local isWhitelisted = eventsFolder.IsResetButtonWhitelisted:InvokeServer(panel)
+	whitelistStatusChanged(panel, isWhitelisted)
+end
+
+local function preferredInputChanged()
+	if UserInputService.PreferredInput == Enum.PreferredInput.KeyboardAndMouse then
+		for _, handler in ButtonHandler._InstanceByPanel do
+			handler:SwitchToDesktopView()
+		end
+		ButtonHandler.IsMobileView = false
+	else
+		for _, handler in ButtonHandler._InstanceByPanel do
+			handler:SwitchToMobileView()
+		end
+		ButtonHandler.IsMobileView = true
+	end
+end
+
+local function main()
+	eventsFolder.WhitelistStatusChanged.OnClientEvent:Connect(whitelistStatusChanged)
+	CollectionService:GetInstanceAddedSignal(PANEL_TAG):Connect(setupPanel)
+	CollectionService:GetInstanceRemovedSignal(PANEL_TAG):Connect(destroyPanel)
+	for _, panel in CollectionService:GetTagged(PANEL_TAG) do
+		setupPanel(panel)
+	end
+
+	CollectionService:GetInstanceAddedSignal(RESET_BUTTON_TAG):Connect(setupResetButton)
+	CollectionService:GetInstanceRemovedSignal(RESET_BUTTON_TAG):Connect(ResetButton.Disconnect)
+	for _, panel in CollectionService:GetTagged(RESET_BUTTON_TAG) do
+		setupResetButton(panel)
+	end
+
+	preferredInputChanged()
+	UserInputService:GetPropertyChangedSignal("PreferredInput"):Connect(preferredInputChanged)
+end
+
+if script:IsDescendantOf(workspace) then
+	main()
+end

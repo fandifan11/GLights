@@ -1,0 +1,26 @@
+local Action = {}
+Action.IsPhysicsAction = true
+
+local function getTilt(group, reverse)
+	local tilt = if group == "Odd" then 30 else 60
+	if reverse then
+		tilt = if tilt == 30 then 60 else 30
+	end
+	return tilt
+end
+
+function Action.Client(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixturesA = Changer.Indexer.Motors.Odd
+	local fixturesB = Changer.Indexer.Motors.Even
+	Changer:Tilt(getTilt("Odd", reverse), fixturesA)
+	Changer:Tilt(getTilt("Even", reverse), fixturesB)
+end
+
+function Action.Server(Changer, Settings, globalCueSettings, executionSettings, reverse)
+	local fixturesA = Changer.Indexer.Motors.Odd
+	local fixturesB = Changer.Indexer.Motors.Even
+	Changer:MarkTilt(getTilt("Odd", reverse), fixturesA)
+	Changer:MarkTilt(getTilt("Even", reverse), fixturesB)
+end
+
+return Action

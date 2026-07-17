@@ -1,0 +1,34 @@
+return {
+	CanHaveBeam = false,
+
+	CanHaveMotors = true,
+	HasTiltMotor = true,
+	HasPanMotor = false,
+	CanFollow = false,
+
+	GetLens = function(model)
+		return model.Head.Lens
+	end,
+
+	CanHaveLight = true,
+	LightTemplate = {
+		Type = "SurfaceLight",
+		Angle = 45,
+		Face = "Front",
+		Range = 60,
+		Brightness = 0.2,
+	},
+
+	AddMotors = function(model, motor, weld, unanchor)
+		motor(
+			"Tilt",
+			model.Base.Base,
+			model.Head.Head,
+			CFrame.new(0, 0.4, 0) * CFrame.Angles(0, math.rad(-90), 0),
+			CFrame.new(0, 0, 0) * CFrame.Angles(0, math.rad(-90), math.rad(-90))
+		)
+		weld(model.Head.Head, model.Head.Lens)
+		unanchor(model.Head.Head)
+		unanchor(model.Head.Lens)
+	end,
+}

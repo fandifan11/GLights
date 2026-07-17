@@ -1,0 +1,653 @@
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local camera = workspace.CurrentCamera
+
+local ColorPicker = {}
+ColorPicker.__index = ColorPicker
+
+local MIN_POSITION = 0.012
+local MAX_POSITION = 0.988
+local switchTweenInfo = TweenInfo.new(0.15)
+
+function ColorPicker.new(frames, gui)
+	local self = setmetatable({}, ColorPicker)
+
+	self._ChangeColorEvent = Instance.new("BindableEvent")
+	self._AddColorEvent = Instance.new("BindableEvent")
+	self._RemoveColorEvent = Instance.new("BindableEvent")
+	self._ChangeGlobalEvent = Instance.new("BindableEvent")
+	self.ChangeColor = self._ChangeColorEvent.Event
+	self.AddColor = self._AddColorEvent.Event
+	self.RemoveColor = self._RemoveColorEvent.Event
+	self.ChangeGlobal = self._ChangeGlobalEvent.Event
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = { gui.Parent }
+
+	self.RaycastParams = raycastParams
+	self.GUI = gui
+	self.Frames = frames
+	self.Value = Color3.fromRGB(255, 102, 102)
+	self.Buttons = {}
+	self.IsOpen = false
+	self.LastActiveButton = nil
+	self.Connections = {}
+	self.ButtonConnections = {}
+	self.GlobalSelection = false
+
+	self:_SetValue(self.Value)
+
+	self:_ConnectWheel()
+	self:_ConnectHueSlider()
+	self:_ConnectValueSlider()
+	self:_ConnectHexBox()
+	self:_ConnectRGBBoxes()
+	self:_ConnectHSVBoxes()
+	self:_ConnectGlobalSwitch()
+
+	self:_UpdateWheel()
+	self:_UpdateHueSlider()
+	self:_UpdateValueSlider()
+	self:_UpdateHexBox()
+	self:_UpdateRGBBoxes()
+	self:_UpdateHSVBoxes()
+
+	self:_ConnectOpenHideButton()
+	self:_ConnectAddRemoveButtons()
+	self:_ConnectListListener()
+
+	return self
+end
+
+function ColorPicker:_ConnectListListener()
+	local function addButton(button)
+		if not button:IsA("TextButton") or button == self.Frames.OpenClose then
+			return
+		end
+		local color = button.BackgroundColor3
+		local hex = color:ToHex()
+		self.Buttons[hex] = button
+		button.BackgroundColor3 = color
+		button.Parent = self.Frames.List
+		local conn1 = button.MouseButton1Click:Connect(function()
+			if self.IsOpen then
+				self:_SetValue(color)
+				self:_UpdateSliders()
+				self:_UpdateTextBoxes()
+			else
+				self._ChangeColorEvent:Fire(color, "A")
+			end
+		end)
+		local conn2 = button.MouseButton2Click:Connect(function()
+			if not self.IsOpen then
+				self._ChangeColorEvent:Fire(color, "B")
+			end
+		end)
+		local conn3 = button:GetAttributeChangedSignal("Global"):Connect(function()
+			if button == self.LastActiveButton then
+				self.GlobalSelection = button:GetAttribute("Global")
+				self:_UpdateGlobalSwitch()
+			end
+		end)
+		self.ButtonConnections[button] = { conn1, conn2, conn3 }
+		if self.Value == color then
+			if self.LastActiveButton then
+				self.LastActiveButton.TextTransparency = 1
+				self.LastActiveButton.UIStroke.Enabled = false
+			end
+			button.TextTransparency = 0
+			button.UIStroke.Enabled = true
+			self.LastActiveButton = button
+		end
+	end
+
+	if self.Frames.List then
+		table.insert(self.Connections, self.Frames.List.ChildAdded:Connect(addButton))
+		for _, button in self.Frames.List:GetChildren() do
+			if button:IsA("TextButton") and button ~= self.Frames.OpenClose then
+				addButton(button)
+			end
+		end
+		table.insert(
+			self.Connections,
+			self.Frames.List.ChildRemoved:Connect(function(button)
+				if not button:IsA("TextButton") or button == self.Frames.OpenClose then
+					return
+				end
+				if self.LastActiveButton == button then
+					self.LastActiveButton = nil
+				end
+				local hex = button.BackgroundColor3:ToHex()
+				self.Buttons[hex] = nil
+				for _, connection in self.ButtonConnections[button] do
+					connection:Disconnect()
+				end
+				self.ButtonConnections[button] = nil
+			end)
+		)
+	end
+end
+
+function ColorPicker:_ConnectOpenHideButton()
+	if self.Frames.OpenClose then
+		table.insert(
+			self.Connections,
+			self.Frames.OpenClose.MouseButton1Click:Connect(function()
+				self.IsOpen = not self.IsOpen
+				if self.Frames.PickerFrame then
+					self.Frames.PickerFrame.Visible = self.IsOpen
+				end
+				if self.IsOpen then
+					self:_SetValue(self.Value)
+				else
+					if self.LastActiveButton then
+						self.LastActiveButton.TextTransparency = 1
+						self.LastActiveButton.UIStroke.Enabled = false
+						self.LastActiveButton = nil
+					end
+				end
+			end)
+		)
+	end
+end
+
+function ColorPicker:_ConnectAddRemoveButtons()
+	if self.Frames.Add then
+		table.insert(
+			self.Connections,
+			self.Frames.Add.MouseButton1Click:Connect(function()
+				local color = self.Value
+				self._AddColorEvent:Fire(color, self.GlobalSelection)
+			end)
+		)
+	end
+	if self.Frames.Remove then
+		table.insert(
+			self.Connections,
+			self.Frames.Remove.MouseButton1Click:Connect(function()
+				local color = self.Value
+				self._RemoveColorEvent:Fire(color, self.GlobalSelection)
+			end)
+		)
+	end
+end
+
+function ColorPicker:_SetValue(color)
+	local r, g, b = color.R, color.G, color.B
+	color = Color3.new(math.clamp(r, 0, 1), math.clamp(g, 0, 1), math.clamp(b, 0, 1))
+	self.Value = color
+	if self.Frames.Preview then
+		self.Frames.Preview.BackgroundColor3 = color
+	end
+	local hex = color:ToHex()
+	local previousButton = self.LastActiveButton
+	if previousButton then
+		previousButton.TextTransparency = 1
+		previousButton.UIStroke.Enabled = false
+		self.LastActiveButton = nil
+	end
+	local button = self.Buttons[hex]
+	local isGlobal = false
+	if button then
+		button.TextTransparency = 0
+		button.UIStroke.Enabled = true
+		self.LastActiveButton = button
+		isGlobal = button:GetAttribute("Global")
+	end
+	if isGlobal ~= self.GlobalSelection then
+		self.GlobalSelection = isGlobal
+		self:_UpdateGlobalSwitch()
+	end
+end
+
+function ColorPicker:_ConnectWheel()
+	if self.Frames.ColourWheel then
+		local mouseDown = false
+		local wheel = self.Frames.ColourWheel
+		local hitbox = wheel.Hitbox
+		local dot = hitbox.Picker
+
+		table.insert(
+			self.Connections,
+			hitbox.InputBegan:Connect(function(input: InputObject)
+				if
+					input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch
+				then
+					mouseDown = true
+				end
+			end)
+		)
+		table.insert(
+			self.Connections,
+			hitbox.InputChanged:Connect(function(input: InputObject)
+				if
+					(
+						input.UserInputType == Enum.UserInputType.MouseMovement
+						or input.UserInputType == Enum.UserInputType.Touch
+					) and mouseDown
+				then
+					local relativeX, relativeY = self:_FindCursorPositionRelativeTo(hitbox)
+					if relativeX == nil then
+						return
+					end
+					local relativeXFromCenter, relativeYFromCenter =
+						relativeX - hitbox.AbsoluteSize.X / 2, relativeY - hitbox.AbsoluteSize.Y / 2
+					local vector = Vector2.new(relativeXFromCenter, relativeYFromCenter)
+					local normalisedVector = vector.Unit
+					local radius = wheel.AbsoluteSize.X / 2
+					local bigRadius = hitbox.AbsoluteSize.X / 2
+					local length = math.clamp(vector.Magnitude, 0, radius)
+					local correctedLength = length / radius
+
+					-- angle ranges from [-180, 180], north = -90, south = 90 (in radians)
+					local angle = math.atan2(normalisedVector.Y, normalisedVector.X)
+					local correctedAngle = angle + math.pi
+					correctedAngle -= math.pi / 2
+					if correctedAngle < 0 then
+						correctedAngle += 2 * math.pi
+					end
+					local hue = correctedAngle / (math.pi * 2)
+
+					local _, _, value = self.Value:ToHSV()
+					local color = Color3.fromHSV(hue, correctedLength, value)
+					dot.BackgroundColor3 = Color3.fromHSV(hue, correctedLength, 1)
+					dot.Position = UDim2.fromOffset(normalisedVector.X * length, normalisedVector.Y * length)
+						+ UDim2.fromOffset(bigRadius, bigRadius)
+					self:_SetValue(color)
+					self:_UpdateHueSlider()
+					self:_UpdateValueSlider()
+					self:_UpdateTextBoxes()
+				end
+			end)
+		)
+		table.insert(
+			self.Connections,
+			UserInputService.InputEnded:Connect(function(input: InputObject)
+				if
+					mouseDown
+					and (
+						input.UserInputType == Enum.UserInputType.MouseButton1
+						or input.UserInputType == Enum.UserInputType.Touch
+					)
+				then
+					mouseDown = false
+				end
+			end)
+		)
+	end
+end
+
+function ColorPicker:_UpdateWheel()
+	if self.Frames.ColourWheel then
+		local wheel = self.Frames.ColourWheel
+		local hitbox = wheel.Hitbox
+		local dot = hitbox.Picker
+		local hue, saturation, _ = self.Value:ToHSV()
+		hue -= 0.25
+		local x = math.cos(hue * math.pi * 2)
+		local y = math.sin(hue * math.pi * 2)
+		dot.Position = UDim2.fromOffset(
+			hitbox.AbsoluteSize.X / 2 + x * saturation * wheel.AbsoluteSize.X / 2,
+			hitbox.AbsoluteSize.Y / 2 + y * saturation * wheel.AbsoluteSize.Y / 2
+		)
+		dot.BackgroundColor3 = Color3.fromHSV(hue + 0.25, saturation, 1)
+	end
+end
+
+function ColorPicker:_FindCursorPositionRelativeTo(frame)
+	local screenPosition = UserInputService:GetMouseLocation()
+	local ray = camera:ViewportPointToRay(screenPosition.X, screenPosition.Y)
+	local hit = workspace:Raycast(ray.Origin, ray.Direction * 500, self.RaycastParams)
+	if hit and hit.Instance then
+		if hit.Normal == self.GUI.Parent.CFrame.UpVector then
+			local topLeftCFrame = self.GUI.Parent.CFrame
+				* CFrame.new(self.GUI.Parent.Size.X / 2, self.GUI.Parent.Size.Y / 2, self.GUI.Parent.Size.Z / 2)
+			local positionRelativeToAdornee = topLeftCFrame:PointToObjectSpace(hit.Position)
+			local projectedX = -positionRelativeToAdornee.Z * self.GUI.PixelsPerStud
+			local projectedY = (self.GUI.Parent.Size.X + positionRelativeToAdornee.X) * self.GUI.PixelsPerStud
+			local relativeX = projectedX - frame.AbsolutePosition.X
+			local relativeY = projectedY - frame.AbsolutePosition.Y
+			return relativeX, relativeY
+		end
+	end
+	return
+end
+
+function ColorPicker:_ConnectHueSlider()
+	local mouseDown = false
+	local hitbox = self.Frames.HueSlider
+	if hitbox then
+		local sliderBit = hitbox.A
+		table.insert(
+			self.Connections,
+			hitbox.InputBegan:Connect(function(input: InputObject)
+				if
+					input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch
+				then
+					mouseDown = true
+				end
+			end)
+		)
+		table.insert(
+			self.Connections,
+			hitbox.InputChanged:Connect(function(input: InputObject)
+				if
+					(
+						input.UserInputType == Enum.UserInputType.MouseMovement
+						or input.UserInputType == Enum.UserInputType.Touch
+					) and mouseDown
+				then
+					local relativeX = self:_FindCursorPositionRelativeTo(hitbox)
+					if relativeX == nil then
+						return
+					end
+					local hue = relativeX / hitbox.AbsoluteSize.X
+					hue = math.clamp(hue, 0, 1)
+					local _, saturation, value = self.Value:ToHSV()
+					sliderBit.Position = UDim2.fromScale(math.clamp(hue, MIN_POSITION, MAX_POSITION), 0.5)
+					self:_SetValue(Color3.fromHSV(hue, saturation, value))
+					self:_UpdateWheel()
+					self:_UpdateValueSlider()
+					self:_UpdateTextBoxes()
+				end
+			end)
+		)
+		table.insert(
+			self.Connections,
+			UserInputService.InputEnded:Connect(function(input: InputObject)
+				if
+					mouseDown
+					and (
+						input.UserInputType == Enum.UserInputType.MouseButton1
+						or input.UserInputType == Enum.UserInputType.Touch
+					)
+				then
+					mouseDown = false
+				end
+			end)
+		)
+	end
+end
+
+function ColorPicker:_UpdateHueSlider()
+	local hue = self.Value:ToHSV()
+	if self.Frames.HueSlider then
+		local sliderBit = self.Frames.HueSlider.A
+		sliderBit.Position = UDim2.fromScale(math.clamp(hue, MIN_POSITION, MAX_POSITION), 0.5)
+	end
+end
+
+function ColorPicker:_ConnectValueSlider()
+	local mouseDown = false
+	local hitbox = self.Frames.ValueSlider
+	if hitbox then
+		local sliderBit = hitbox.A
+
+		table.insert(
+			self.Connections,
+			hitbox.InputBegan:Connect(function(input: InputObject)
+				if
+					input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch
+				then
+					mouseDown = true
+				end
+			end)
+		)
+		table.insert(
+			self.Connections,
+			hitbox.InputChanged:Connect(function(input: InputObject)
+				if
+					(
+						input.UserInputType == Enum.UserInputType.MouseMovement
+						or input.UserInputType == Enum.UserInputType.Touch
+					) and mouseDown
+				then
+					local relativeX = self:_FindCursorPositionRelativeTo(hitbox)
+					if relativeX == nil then
+						return
+					end
+					local value = relativeX / hitbox.AbsoluteSize.X
+					value = math.clamp(value, 0, 1)
+					local hue, saturation, _ = self.Value:ToHSV()
+					sliderBit.Position = UDim2.fromScale(math.clamp(value, MIN_POSITION, MAX_POSITION), 0.5)
+					self:_SetValue(Color3.fromHSV(hue, saturation, value))
+					self:_UpdateWheel()
+					self:_UpdateTextBoxes()
+				end
+			end)
+		)
+		table.insert(
+			self.Connections,
+			UserInputService.InputEnded:Connect(function(input: InputObject)
+				if
+					mouseDown
+					and (
+						input.UserInputType == Enum.UserInputType.MouseButton1
+						or input.UserInputType == Enum.UserInputType.Touch
+					)
+				then
+					mouseDown = false
+				end
+			end)
+		)
+	end
+end
+
+function ColorPicker:_UpdateValueSlider()
+	local hue, _, value = self.Value:ToHSV()
+	if self.Frames.ValueSlider then
+		local sliderBit = self.Frames.ValueSlider.A
+		local gradient = self.Frames.ValueSlider.UIGradient
+		sliderBit.Position = UDim2.fromScale(math.clamp(value, MIN_POSITION, MAX_POSITION), 0.5)
+		gradient.Color = ColorSequence.new(Color3.new(0, 0, 0), Color3.fromHSV(hue, 1, 1))
+	end
+end
+
+function ColorPicker:_ConnectHexBox()
+	local box = self.Frames.Hex
+	if box then
+		table.insert(
+			self.Connections,
+			box:GetPropertyChangedSignal("Text"):Connect(function()
+				local text = box.Text
+				local isValidHex, color = pcall(Color3.fromHex, text)
+				if isValidHex and color ~= self.Value then
+					self:_SetValue(color)
+					self:_UpdateSliders()
+					self:_UpdateRGBBoxes()
+					self:_UpdateHSVBoxes()
+				end
+			end)
+		)
+	end
+end
+
+local function isValidRGBValue(num)
+	if not num then
+		return false
+	end
+	if num < 0 or num > 255 then
+		return false
+	end
+	return true
+end
+
+function ColorPicker:_ConnectRGBBoxes()
+	local rBox = self.Frames.R
+	local gBox = self.Frames.G
+	local bBox = self.Frames.B
+
+	if rBox and gBox and bBox then
+		local function update()
+			local r = tonumber(rBox.Text)
+			local g = tonumber(gBox.Text)
+			local b = tonumber(bBox.Text)
+
+			if not isValidRGBValue(r) or not isValidRGBValue(g) or not isValidRGBValue(b) then
+				return
+			end
+
+			local color = Color3.fromRGB(r, g, b)
+			if self.Value ~= color then
+				self:_SetValue(color)
+				self:_UpdateSliders()
+				self:_UpdateHexBox()
+				self:_UpdateHSVBoxes()
+			end
+		end
+
+		table.insert(self.Connections, rBox:GetPropertyChangedSignal("Text"):Connect(update))
+		table.insert(self.Connections, gBox:GetPropertyChangedSignal("Text"):Connect(update))
+		table.insert(self.Connections, bBox:GetPropertyChangedSignal("Text"):Connect(update))
+	end
+end
+
+function ColorPicker:_ConnectHSVBoxes()
+	local hBox = self.Frames.H
+	local sBox = self.Frames.S
+	local vBox = self.Frames.V
+
+	if hBox and sBox and vBox then
+		local function update()
+			local h = tonumber(hBox.Text)
+			local s = tonumber(sBox.Text)
+			local v = tonumber(vBox.Text)
+
+			if not h or not s or not v then
+				return
+			end
+			if h < 0 or h > 360 then
+				return
+			end
+			if s < 0 or s > 100 then
+				return
+			end
+			if v < 0 or v > 100 then
+				return
+			end
+
+			local color = Color3.fromHSV(h / 360, s / 100, v / 100)
+			if self.Value ~= color then
+				self:_SetValue(color)
+				self:_UpdateSliders()
+				self:_UpdateHexBox()
+				self:_UpdateRGBBoxes()
+			end
+		end
+
+		table.insert(self.Connections, hBox:GetPropertyChangedSignal("Text"):Connect(update))
+		table.insert(self.Connections, sBox:GetPropertyChangedSignal("Text"):Connect(update))
+		table.insert(self.Connections, vBox:GetPropertyChangedSignal("Text"):Connect(update))
+	end
+end
+
+function ColorPicker:_UpdateTextBoxes()
+	self:_UpdateHexBox()
+	self:_UpdateRGBBoxes()
+	self:_UpdateHSVBoxes()
+end
+
+function ColorPicker:_UpdateSliders()
+	self:_UpdateWheel()
+	self:_UpdateHueSlider()
+	self:_UpdateValueSlider()
+end
+
+function ColorPicker:_UpdateHexBox()
+	local box = self.Frames.Hex
+	if box then
+		box.Text = ""
+		box.PlaceholderText = `#{self.Value:ToHex()}`
+	end
+end
+
+function ColorPicker:_UpdateRGBBoxes()
+	local rBox = self.Frames.R
+	local gBox = self.Frames.G
+	local bBox = self.Frames.B
+	local color = self.Value
+	local r, g, b = color.R, color.G, color.B
+
+	if rBox and gBox and bBox then
+		rBox.Text = ""
+		gBox.Text = ""
+		bBox.Text = ""
+		rBox.PlaceholderText = math.round(r * 255)
+		gBox.PlaceholderText = math.round(g * 255)
+		bBox.PlaceholderText = math.round(b * 255)
+	end
+end
+
+function ColorPicker:_UpdateHSVBoxes()
+	local hBox = self.Frames.H
+	local sBox = self.Frames.S
+	local vBox = self.Frames.V
+	local color = self.Value
+	local h, s, v = color:ToHSV()
+
+	if hBox and sBox and vBox then
+		hBox.Text = ""
+		sBox.Text = ""
+		vBox.Text = ""
+		hBox.PlaceholderText = math.round(h * 360)
+		sBox.PlaceholderText = math.round(s * 100)
+		vBox.PlaceholderText = math.round(v * 100)
+	end
+end
+
+function ColorPicker:Destroy()
+	for _, connection in self.Connections do
+		connection:Disconnect()
+	end
+	table.clear(self.Connections)
+	for _, connectionSet in self.ButtonConnections do
+		for _, connection in connectionSet do
+			connection:Disconnect()
+		end
+	end
+	table.clear(self.ButtonConnections)
+	self._ChangeColorEvent:Destroy()
+	self._AddColorEvent:Destroy()
+	self._RemoveColorEvent:Destroy()
+	self._ChangeGlobalEvent:Destroy()
+end
+
+function ColorPicker:_UpdateGlobalSwitch()
+	local switch = self.Frames.GlobalToggle
+	if not switch then
+		return
+	end
+	if self.GlobalSelection then
+		TweenService:Create(
+			switch.Circle,
+			switchTweenInfo,
+			{ Position = UDim2.fromScale(1, 0.5), AnchorPoint = Vector2.new(1, 0.5) }
+		):Play()
+	else
+		TweenService:Create(
+			switch.Circle,
+			switchTweenInfo,
+			{ Position = UDim2.fromScale(0, 0.5), AnchorPoint = Vector2.new(0, 0.5) }
+		):Play()
+	end
+end
+
+function ColorPicker:_ConnectGlobalSwitch()
+	local switch = self.Frames.GlobalToggle
+	if not switch then
+		return
+	end
+	switch.MouseButton1Click:Connect(function()
+		self.GlobalSelection = not self.GlobalSelection
+		self:_UpdateGlobalSwitch()
+		if self.LastActiveButton then
+			self._ChangeGlobalEvent:Fire(self.Value, self.GlobalSelection)
+		end
+	end)
+end
+
+return ColorPicker

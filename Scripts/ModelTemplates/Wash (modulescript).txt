@@ -1,0 +1,51 @@
+return {
+	CanHaveBeam = true,
+	DefaultBeamMode = "Beam",
+	BeamDirection = Vector3.new(1, 0, 0),
+	BeamLength = 50,
+	BeamWidth0 = 1.5,
+	BeamWidth1 = 50,
+
+	CanHaveMotors = true,
+	HasTiltMotor = true,
+	HasPanMotor = true,
+
+	CanFollow = true,
+	FollowTextureLength = 0.9,
+	FollowBeamWidth = 0.5,
+	LimitBeamLength = true,
+
+	GetLens = function(model)
+		return model.Head.Lens
+	end,
+
+	CanHaveLight = true,
+	LightTemplate = {
+		Type = "SpotLight",
+		Angle = 45,
+		Face = "Right",
+		Range = 60,
+		Brightness = 1,
+	},
+
+	AddMotors = function(model, motor, weld, unanchor)
+		motor(
+			"Tilt",
+			model.Arm.Arm,
+			model.Head.Head,
+			CFrame.new(0, 0.6, 0) * CFrame.Angles(0, math.rad(90), 0),
+			CFrame.new(0, 0, 0) * CFrame.Angles(0, 0, math.rad(90))
+		)
+		motor(
+			"Pan",
+			model.Base.Base,
+			model.Arm.Arm,
+			CFrame.new(0, 1.2, 0) * CFrame.Angles(math.rad(90), 0, 0),
+			CFrame.new(0, 0, 0) * CFrame.Angles(math.rad(-90), math.rad(180), 0)
+		)
+		weld(model.Head.Head, model.Head.Lens)
+		unanchor(model.Head.Head)
+		unanchor(model.Head.Lens)
+		unanchor(model.Arm.Arm)
+	end,
+}

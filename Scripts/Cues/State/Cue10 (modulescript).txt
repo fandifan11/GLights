@@ -1,0 +1,43 @@
+local Cue = {}
+Cue.OnDisable = "FadeResetOnOff"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local fixturesA = Changer.Indexer:Get("Odd", executionSettings.lensGroup)
+	local fixturesB = Changer.Indexer:Get("Even", executionSettings.lensGroup)
+	local shouldStopRunning = false
+	local state = Changer.State
+
+	task.spawn(function()
+		repeat
+			Changer:CueOn(fixturesA)
+			Changer:CueFadeOff(fixturesA)
+			task.wait(0.5 * state.CueSpeed)
+			if shouldStopRunning then
+				if globalCueSettings.KillCues then
+					return
+				else
+					break
+				end
+			end
+
+			Changer:CueOn(fixturesB)
+			Changer:CueFadeOff(fixturesB)
+			task.wait(0.5 * state.CueSpeed)
+			if shouldStopRunning and globalCueSettings.KillCues then
+				return
+			end
+
+			if runOnce then
+				shouldStopRunning = true
+			end
+			task.wait()
+		until shouldStopRunning
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

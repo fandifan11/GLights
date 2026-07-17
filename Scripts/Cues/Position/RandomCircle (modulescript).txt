@@ -1,0 +1,76 @@
+local Cue = {}
+Cue.IsPhysicsCue = true
+Cue.OnDisable = "ResetMotors"
+Cue._GroupOffsets = {}
+Cue._GroupDirections = {}
+
+local rng = Random.new()
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings)
+	local fixtures = Changer.Indexer.Motors.All
+	local shouldStopRunning = false
+	local numbered = Changer.Indexer.Motors.Numbered
+	for group, _ in numbered do
+		if not Cue._GroupOffsets[group] then
+			Cue._GroupOffsets[group] = rng:NextNumber(0, math.pi * 2)
+			if math.random(1, 2) == 1 then
+				Cue._GroupDirections[group] = 1
+			else
+				Cue._GroupDirections[group] = -1
+			end
+		end
+	end
+
+	local offsets = {}
+	local directions = {}
+	for _, id in fixtures do
+		offsets[id] = rng:NextNumber(0, math.pi * 2)
+		if math.random(1, 2) == 1 then
+			directions[id] = 1
+		else
+			directions[id] = -1
+		end
+	end
+
+	task.spawn(function()
+		local degrees = 0
+		local startDegrees = degrees
+		while not shouldStopRunning do
+			local firstSpeed = Changer.State.MotorSpeed
+			degrees += firstSpeed --* 2
+			if globalCueSettings.GroupRandom then
+				for group, ids in numbered do
+					local offset = Cue._GroupOffsets[group]
+					local rad = (degrees * Cue._GroupDirections[group]) + offset
+					local tilt = 60 + (math.deg(math.cos(rad)) / 1.5) * 1
+					local pan = math.deg(math.sin(rad))
+					Changer:CueTilt(tilt, ids)
+					Changer:CuePan(pan, ids)
+				end
+			else
+				for _, id in fixtures do
+					local offset = offsets[id]
+					local rad = (degrees * directions[id]) + offset
+					local tilt = 60 + (math.deg(math.cos(rad)) / 1.5) * 1
+					local pan = math.deg(math.sin(rad))
+					Changer:CueTilt(tilt, { id })
+					Changer:CuePan(pan, { id })
+				end
+			end
+			task.wait(1 / workspace:GetRealPhysicsFPS())
+			if shouldStopRunning and globalCueSettings.KillCues then
+				return
+			end
+			if runOnce and degrees - startDegrees > math.pi * 2 then
+				shouldStopRunning = true
+			end
+		end
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

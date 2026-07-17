@@ -1,0 +1,72 @@
+local RunService = game:GetService("RunService")
+
+local Indexer = require(script.Parent.Indexer)
+local Changer = require(script.Parent.Changer)
+local Signal = require(script.Parent.Signal)
+
+local Core = {}
+Core.CoreAdded = Signal.new()
+Core._AllCores = {}
+Core._ByUniqueName = {}
+Core._GlobalID = 1
+
+if _G.GLightsCount then
+	_G.GLightsCount += 1
+else
+	_G.GLightsCount = 1
+end
+Core._CoreNumber = _G.GLightsCount
+
+function Core.new(Settings, serverId, indexerIds)
+	local self = setmetatable({}, Core)
+
+	self.ID = serverId or `GLights-{Core._CoreNumber}-{Core._GlobalID}`
+	self.Settings = Settings
+
+	self.Indexer = Indexer.new(Settings.Fixtures, self.ID, indexerIds, Settings.BaseModel)
+	self.Changer = Changer.new(Settings, self.Indexer, self.ID)
+
+	table.insert(Core._AllCores, self)
+	Core._ByUniqueName[Settings.UniqueName] = self
+
+	Core._GlobalID += 1
+
+	Core.CoreAdded:Fire(self)
+
+	return self
+end
+
+function Core.GetAllCores()
+	return Core._AllCores
+end
+
+function Core.GetByUniqueName(uniqueName: string)
+	return Core._ByUniqueName[uniqueName]
+end
+
+if RunService:IsServer() then
+	script.Parent.Events.GetCurrentData.OnServerInvoke = function()
+		local dataToSend = {}
+		for _, core in Core._AllCores do
+			if not core.Settings.ClientSided then
+				continue
+			end
+			table.insert(dataToSend, {
+				ID = core.ID,
+				Settings = core.Settings,
+				State = core.Changer.State,
+				IndexerIDs = {
+					LensGroups = core.Indexer.LensGroups,
+					SelectedLensGroup = core.Indexer.SelectedLensGroup,
+					Motors = core.Indexer.Motors,
+					LensIDToModelID = core.Indexer.LensIDToModelID,
+					ModelScales = core.Indexer.ModelScales,
+					InvertPanArray = core.Indexer.InvertPanArray,
+				},
+			})
+		end
+		return dataToSend
+	end
+end
+
+return Core

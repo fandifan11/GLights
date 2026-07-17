@@ -1,0 +1,47 @@
+local Cue = {}
+Cue.IsPhysicsCue = true
+Cue.OnDisable = "ResetPan"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings)
+	local fixtures = Changer.Indexer.Motors.Numbered
+	local numbers = Changer.Indexer.Motors.TotalNumberCount
+	local shouldStopRunning = false
+	local state = Changer.State
+
+	task.spawn(function()
+		repeat
+			for i = 1, numbers do
+				if shouldStopRunning then
+					break
+				end
+				Changer:CuePan(30, fixtures[i])
+				task.wait(0.3 * state.CueSpeed)
+				if shouldStopRunning and globalCueSettings.KillCues then
+					return
+				end
+			end
+			for i = 1, numbers do
+				if shouldStopRunning then
+					break
+				end
+				Changer:CuePan(-30, fixtures[i])
+				task.wait(0.3 * state.CueSpeed)
+				if shouldStopRunning and globalCueSettings.KillCues then
+					return
+				end
+			end
+
+			if runOnce then
+				shouldStopRunning = true
+			end
+			task.wait()
+		until shouldStopRunning
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

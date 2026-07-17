@@ -1,0 +1,49 @@
+local Cue = {}
+Cue.Settings = {
+	Groups = 2,
+}
+Cue.OnDisable = "ResetOnOff"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings, cueSettings, executionSettings)
+	local fixtures = Changer.Indexer:Get("Numbered", executionSettings.lensGroup)
+	local numbers = Changer.Indexer:GetTotalNumberCount(executionSettings.lensGroup)
+	local shouldStopRunning = false
+	local state = Changer.State
+
+	task.spawn(function()
+		repeat
+			local visible = 1
+			local iterations = math.ceil(numbers / cueSettings.Groups)
+			for _ = 1, iterations do
+				if shouldStopRunning then
+					if globalCueSettings.KillCues then
+						return
+					else
+						break
+					end
+				end
+				for group, fixtureIds in fixtures do
+					if group >= visible and group <= visible + cueSettings.Groups - 1 then
+						Changer:CueOn(fixtureIds)
+					else
+						Changer:CueOff(fixtureIds)
+					end
+				end
+				visible += cueSettings.Groups
+				task.wait(0.5 * state.CueSpeed)
+			end
+
+			if runOnce then
+				shouldStopRunning = true
+			end
+			task.wait()
+		until shouldStopRunning
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

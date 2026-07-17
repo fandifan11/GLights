@@ -1,0 +1,38 @@
+local Cue = {}
+Cue.IsPhysicsCue = true
+Cue.OnDisable = "ResetMotors"
+
+function Cue.Enable(Changer, Settings, runOnce, cueName, globalCueSettings)
+	local fixtures = Changer.Indexer.Motors.Numbered
+	local shouldStopRunning = false
+
+	task.spawn(function()
+		local degrees = math.rad(Changer.State.Tilt[1] or 0)
+		local startDegrees = degrees
+		while not shouldStopRunning do
+			local firstSpeed = Changer.State.MotorSpeed
+			degrees += firstSpeed --* 2
+			for offset, fixtureIds in fixtures do
+				local rad = degrees + math.rad(offset * (180 / #fixtures))
+				local tilt = 60 + (math.deg(math.cos(rad)) / 1.5) * 1
+				local pan = math.deg(math.sin(rad))
+				Changer:CueTilt(tilt, fixtureIds)
+				Changer:CuePan(pan, fixtureIds)
+			end
+			task.wait(1 / workspace:GetRealPhysicsFPS())
+			if shouldStopRunning and globalCueSettings.KillCues then
+				return
+			end
+			if runOnce and degrees - startDegrees > math.pi * 2 then
+				shouldStopRunning = true
+			end
+		end
+		Changer:CueDone(cueName)
+	end)
+
+	return function()
+		shouldStopRunning = true
+	end
+end
+
+return Cue

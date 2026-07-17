@@ -1,0 +1,1586 @@
+--!native
+
+-- this code is terrible
+-- thats what happens when a single script is being worked on for like half a year
+-- with no idea how anything should actually work
+
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+
+local DEFAULT_COLOR = Color3.fromRGB(255, 255, 255)
+local DEFAULT_MOTOR_SPEED = 0.01
+local DEFAULT_GLOBAL_CUE_SETTINGS = {
+	Overshoot = false,
+	SecondaryColor = Color3.fromRGB(255, 255, 255),
+	GroupRandom = false,
+	KillCues = false,
+}
+local PHYSICS_BASED_CUE_SETTINGS = {
+	Overshoot = true,
+}
+local eventsFolder = script.Parent.Events
+local cuesFolder = script.Parent.Parent.Cues
+local customCuesFolder = script.Parent.Parent.Parent.Custom:FindFirstChild("Cues")
+local actionsFolder = script.Parent.Parent.Actions
+local events = {
+	on = eventsFolder.On,
+	off = eventsFolder.Off,
+	fadeon = eventsFolder.FadeOn,
+	fadeoff = eventsFolder.FadeOff,
+	color = eventsFolder.Color,
+	setfadespeedmultiplier = eventsFolder.FadeSpeed,
+	setcuespeedmultiplier = eventsFolder.CueSpeed,
+	setdimness = eventsFolder.Dimness,
+	cue = eventsFolder.Cue,
+	action = eventsFolder.Action,
+	setloopcuesmodifier = eventsFolder.LoopCues,
+	setsmoothcolormodifier = eventsFolder.SmoothColor,
+	setanimatedgradientsmodifier = eventsFolder.AnimatedGradients,
+	tilt = eventsFolder.Tilt,
+	pan = eventsFolder.Pan,
+	setbeammode = eventsFolder.BeamMode,
+	setmotorspeed = eventsFolder.MotorSpeed,
+	setbeamthickness = eventsFolder.BeamThickness,
+	goborotate = eventsFolder.RotateGobo,
+	setcuesetting = eventsFolder.SetCueSetting,
+	dofollow = eventsFolder.DoFollow,
+	setglobalcuesetting = eventsFolder.SetGlobalCueSetting,
+	gobospread = eventsFolder.GoboSpread,
+	beamthicknessmultiplier = eventsFolder._BeamThicknessMultiplier,
+	texturelength = eventsFolder._TextureLength,
+	setlensgroups = eventsFolder.SetLensGroup,
+}
+
+local Signal = require(script.Parent.Signal)
+local Fixture = require(script.Parent.Fixture)
+local TemplateManager = require(script.Parent.TemplateManager)
+local getGlobalSettings = require(script.Parent.getGlobalSettings)
+local GlobalSettings = getGlobalSettings()
+
+local Changer = {}
+Changer.__index = Changer
+Changer._CueModules = {}
+Changer._ActionModules = {}
+Changer._ModelTemplates = {}
+
+local function setupModules(folder, baseName, tbl)
+	if not folder then
+		return
+	end
+	for _, moduleScript in folder:GetChildren() do
+		if moduleScript:IsA("ModuleScript") then
+			tbl[`{baseName}{moduleScript.Name}`] = require(moduleScript)
+		else
+			setupModules(moduleScript, `{moduleScript.Name}.`, tbl)
+		end
+	end
+end
+setupModules(cuesFolder, "", Changer._CueModules)
+setupModules(customCuesFolder, "", Changer._CueModules)
+setupModules(actionsFolder, "", Changer._ActionModules)
+--setupModules(modelTemplatesFolder, "", Changer._ModelTemplates)
+
+local function deepCopy(tbl)
+	local result = {}
+	for i, v in tbl do
+		if typeof(v) == "table" then
+			result[i] = deepCopy(tbl)
+		else
+			result[i] = v
+		end
+	end
+	return result
+end
+
+local function Map(n: number, oldMin: number, oldMax: number, min: number, max: number): number
+	return (min + ((max - min) * ((n - oldMin) / (oldMax - oldMin))))
+end
+
+function Changer.new(Settings, Indexer, ID)
+	local self = setmetatable({}, Changer)
+	local modelTemplate = TemplateManager.GetTemplate(Settings.BaseModel)
+
+	self.Settings = Settings
+	self.Indexer = Indexer
+	self.ID = ID
+
+	self.CanHavePhysicsElements = modelTemplate.CanHaveMotors and Settings.AddMotors
+	self.CanHaveBeamElements = modelTemplate.CanHaveBeam and Settings.AddBeams
+	self.CanHaveGoboElements = modelTemplate.CanHaveGobo and Settings.AddGobo
+	self.CanHaveLightElements = modelTemplate.CanHaveLight
+
+	self.State = {
+		Enabled = {},
+		Color = {},
+		FadeSpeed = 1,
+		CueSpeed = 1,
+		GradientSpeed = 1,
+		LoopCues = true,
+		Dimness = 1,
+		ActiveCues = {},
+		ActivePhysicsCues = {},
+		SmoothColor = false,
+		AnimatedGradients = false,
+		GoboRotate = false,
+		BeamMode = if modelTemplate.DefaultBeamMode == "NoBeam" or not self.CanHaveBeamElements
+			then "NoBeam"
+			else modelTemplate.DefaultBeamMode,
+		MotorSpeed = DEFAULT_MOTOR_SPEED,
+		BeamThickness = 1,
+		GoboSpread = 1,
+		CueSettings = {},
+		GlobalCueSettings = deepCopy(DEFAULT_GLOBAL_CUE_SETTINGS),
+		BeamThicknessMultiplier = 1,
+		TextureLength = modelTemplate.TextureLength or 0.99,
+	}
+
+	self.ModelTemplate = modelTemplate
+
+	self.FadeTimestamps = {}
+	self.ColorTimestamps = {}
+	self.FollowTimestamp = nil
+	self.FollowRotations = {}
+
+	self.TiltMotors = {}
+	self.PanMotors = {}
+	self.GoboMotors = {}
+	self.LightAttachments = {}
+	self.BeamAttachments = {}
+	self.LightAttachmentOffsets = {}
+	self.Beams = {}
+	self.GoboAttachments = {}
+	self.Lenses = {}
+
+	self.CueFunctions = {}
+	self.Lights = {}
+	self.Events = {
+		TurnedOn = Signal.new(),
+		TurnedOff = Signal.new(),
+		FadedOn = Signal.new(),
+		FadedOff = Signal.new(),
+		ColorChanged = Signal.new(),
+		FadeSpeedChanged = Signal.new(),
+		CueSpeedChanged = Signal.new(),
+		LoopCuesChanged = Signal.new(),
+		DimnessChanged = Signal.new(),
+		CueActivated = Signal.new(),
+		CueDeactivated = Signal.new(),
+		SmoothColorChanged = Signal.new(),
+		AnimatedGradientsChanged = Signal.new(),
+		ActionRan = Signal.new(),
+		ResetBegan = Signal.new(),
+		ResetEnded = Signal.new(),
+		HardResetBegan = Signal.new(),
+		HardResetEnded = Signal.new(),
+		TiltChanged = Signal.new(),
+		PanChanged = Signal.new(),
+		BeamModeChanged = Signal.new(),
+		MotorSpeedChanged = Signal.new(),
+		BeamThicknessChanged = Signal.new(),
+		RotateGoboChanged = Signal.new(),
+		CueSettingChanged = Signal.new(),
+		GlobalCueSettingChanged = Signal.new(),
+		FollowChanged = Signal.new(),
+		GoboSpreadChanged = Signal.new(),
+		LensGroupChanged = Signal.new(),
+	}
+	self.SendToClient = RunService:IsServer() and Settings.ClientSided
+	self.SendPhysicsToClient = self.SendToClient and not Settings.ServerPhysics
+	self.RunPhysics = (RunService:IsServer() and (Settings.ClientSided == false or Settings.ServerPhysics))
+		or (RunService:IsClient() and Settings.ServerPhysics == false)
+
+	self.FadeReset = if self.Settings.FadeReset ~= nil
+		then self.Settings.FadeReset
+		else GlobalSettings.FadeReset or false
+
+	self.CueDoneForceFade = false
+
+	self.BeamLength = self.Settings.BeamLength or modelTemplate.BeamLength
+	self.MaxBrightness = if self.Settings.MaxBrightness
+		then self.Settings.MaxBrightness
+		elseif
+			modelTemplate.LightTemplate and modelTemplate.LightTemplate.Brightness
+		then modelTemplate.LightTemplate.Brightness
+		else 1
+
+	if modelTemplate.HasTiltMotor then
+		self.State.Tilt = {}
+	end
+	if modelTemplate.HasPanMotor then
+		self.State.Pan = {}
+	end
+	if modelTemplate.HasGoboMotor then
+		self.State.GoboDirection = {}
+	end
+
+	if RunService:IsServer() then
+		self:_AddMotorsAndStuffToModels()
+	end
+
+	self:_StartTagListener()
+	self:_SetCueSettings()
+
+	return self
+end
+
+function Changer:_StartTagListener()
+	local modelTemplate = self.ModelTemplate
+	local ID = self.ID
+
+	local function addLens(instance, fixtureId, modelScale)
+		local id = instance:GetAttribute("ID")
+
+		if
+			modelTemplate.CanHaveLight
+			and ((self.Settings.AddLight and modelTemplate.LightTemplate) or instance:FindFirstChild("Light"))
+		then
+			if instance.Light:IsA("Attachment") then
+				if not self.LightAttachments[fixtureId] then
+					self.LightAttachments[fixtureId] = {}
+				end
+				self.LightAttachments[fixtureId][id] = instance.Light
+				self.LightAttachmentOffsets[id] = if instance.Light.Position ~= Vector3.zero
+					then instance.Light.Position
+					else nil
+			end
+		end
+
+		if self.CanHaveBeamElements then
+			if not self.BeamAttachments[fixtureId] then
+				self.BeamAttachments[fixtureId] = {}
+			end
+			self.BeamAttachments[fixtureId][id] = instance.BeamEnd
+			self.Beams[id] = instance.MainBeam
+		end
+
+		if not self.Lenses[fixtureId] then
+			self.Lenses[fixtureId] = {}
+		end
+		self.Lenses[fixtureId][id] = instance
+
+		if modelTemplate.CanHaveGobo and self.Settings.AddGobo then
+			self.GoboAttachments[id] = {}
+			for i = 1, 8 do
+				local beam = instance[`GAttachment{i}`]
+				table.insert(self.GoboAttachments[id], beam)
+			end
+		end
+
+		if self.SendToClient == false then
+			local light = Fixture.new(
+				instance,
+				self.CanHaveBeamElements,
+				modelTemplate.CanHaveLight
+					and (
+						(self.Settings.AddLight and modelTemplate.LightTemplate)
+						or instance:FindFirstChild("Light") ~= nil
+					),
+				modelTemplate.CanHaveGobo and self.Settings.AddGobo,
+				self.MaxBrightness,
+				self.Settings.OffColor,
+				modelScale,
+				self.Settings.UseLensTransparency,
+				self.Settings.MatchAngle
+			)
+			self.Lights[id] = light
+			self:ApplySingleLensState(id)
+		end
+	end
+
+	local function addFixture(instance)
+		local id = instance:GetAttribute("ID")
+		local scale = if instance:IsA("Model") then instance:GetScale() else 1
+		--self.Indexer.Motors._IDToModel[id] = instance
+
+		self.FollowRotations[id] = 0
+		if self.RunPhysics then
+			if self.CanHavePhysicsElements then
+				if modelTemplate.HasTiltMotor then
+					self.TiltMotors[id] = instance.Motors.Tilt
+				end
+				if modelTemplate.HasPanMotor then
+					self.PanMotors[id] = instance.Motors.Pan
+				end
+				if modelTemplate.HasGoboMotor then
+					self.GoboMotors[id] = instance.Motors.Gobo
+				end
+			end
+
+			self:ApplySingleLightState(id)
+		end
+
+		if modelTemplate.IsMultilens then
+			for _, lens in modelTemplate.GetLenses(instance) do
+				addLens(lens, id, scale)
+			end
+		else
+			addLens(modelTemplate.GetLens(instance), id, scale)
+		end
+	end
+
+	if RunService:IsClient() then
+		CollectionService:GetInstanceAddedSignal(ID):Connect(addFixture)
+		CollectionService:GetInstanceRemovedSignal(ID):Connect(function(instance)
+			local id = instance:GetAttribute("ID")
+			self.Lights[id] = nil
+			--self.Indexer.Motors._IDToModel[id] = nil
+		end)
+	end
+
+	for _, instance in CollectionService:GetTagged(ID) do
+		addFixture(instance)
+	end
+end
+
+function Changer:_AddMotorsAndStuffToModels()
+	local modelTemplate = self.ModelTemplate
+	for _, id in self.Indexer:Get() do
+		self.State.Enabled[id] = false
+		self.State.Color[id] = DEFAULT_COLOR
+
+		if self.CanHaveBeamElements then
+			local lens = self.Indexer._IDToModel[id]
+			local modelScale = self.Indexer.ModelScales[self.Indexer.LensIDToModelID[id]] or 1
+			local beam = script.Beam:Clone()
+			local baseAttachment = Instance.new("Attachment")
+			baseAttachment.Position = Vector3.zero
+			baseAttachment.Name = "BaseAttachment"
+			if modelTemplate.BaseAttachmentOrientation then
+				baseAttachment.Orientation = modelTemplate.BaseAttachmentOrientation
+			end
+			baseAttachment.Parent = lens
+			local endAttachment = Instance.new("Attachment")
+			endAttachment.Name = "BeamEnd"
+			endAttachment.Position = modelTemplate.BeamDirection * self.BeamLength * modelScale
+			if modelTemplate.EndAttachmentOrientation then
+				endAttachment.Orientation = modelTemplate.EndAttachmentOrientation
+			end
+			endAttachment.Parent = lens
+			beam.Name = "MainBeam"
+			beam.Width0 = modelTemplate.BeamWidth0 * modelScale
+			beam.Width1 = modelTemplate.BeamWidth1 * modelScale
+			beam.TextureLength = modelTemplate.TextureLength or 0.99
+			beam.Attachment0 = baseAttachment
+			beam.Attachment1 = endAttachment
+			beam.TextureMode = modelTemplate.BeamTextureMode or Enum.TextureMode.Stretch
+			beam.FaceCamera = if modelTemplate.BeamFaceCamera ~= nil then modelTemplate.BeamFaceCamera else true
+			if modelTemplate.BeamTexture then
+				beam.Texture = modelTemplate.BeamTexture
+			end
+			beam.Parent = lens
+			self.Beams[id] = beam
+		end
+
+		local lens = self.Indexer._IDToModel[id]
+		if modelTemplate.CanHaveLight then
+			if not lens:FindFirstChild("Light") then
+				if self.Settings.AddLight and modelTemplate.LightTemplate then
+					local lightTemplate = modelTemplate.LightTemplate
+					local light = Instance.new(lightTemplate.Type)
+					if light:IsA("SurfaceLight") or light:IsA("SpotLight") then
+						light.Angle = lightTemplate.Angle
+						light.Face = lightTemplate.Face
+					end
+					light.Range = self.Settings.LightRange or lightTemplate.Range
+					light.Shadows = self.Settings.CastShadow or false
+					light.Name = "Light"
+
+					if modelTemplate.CanFollow or lightTemplate.Offset then
+						local attachment = Instance.new("Attachment")
+						attachment.Name = "Light"
+						attachment.Position = lightTemplate.Offset or Vector3.zero
+						light.Parent = attachment
+						attachment.Parent = lens
+					else
+						light.Parent = lens
+					end
+				end
+			else
+				local lightInstance = lens:FindFirstChild("Light")
+				if not lightInstance:IsA("Light") then
+					lightInstance = lightInstance:FindFirstChild("Light")
+				end
+
+				if lightInstance.Enabled == false then
+					lightInstance.Enabled = true
+				end
+				if lightInstance.Brightness ~= self.MaxBrightness then
+					lens:SetAttribute("MaxBrightness", lightInstance.Brightness)
+				end
+			end
+		end
+
+		if self.Settings.AddGobo and modelTemplate.CanHaveGobo then
+			local modelScale = self.Indexer.ModelScales[self.Indexer.LensIDToModelID[id]] or 1
+			local baseAttachment = lens:FindFirstChild("BaseAttachment")
+			if not baseAttachment then
+				baseAttachment = Instance.new("Attachment")
+				baseAttachment.Position = Vector3.zero
+				baseAttachment.Name = "BaseAttachment"
+				if modelTemplate.BaseAttachmentOrientation then
+					baseAttachment.Orientation = modelTemplate.BaseAttachmentOrientation
+				end
+				baseAttachment.Parent = lens
+			end
+			for i = 1, 8 do
+				local beam = script.Beam:Clone()
+
+				local progress = math.rad(i * (360 / 8))
+				local x = math.sin(progress) * modelTemplate.GoboSpread * modelScale
+				local z = math.cos(progress) * modelTemplate.GoboSpread * modelScale
+
+				local endAttachment = Instance.new("Attachment")
+				local position
+				-- TODO: this is terrible
+				if modelTemplate.BeamDirection.X then
+					position = Vector3.new(modelTemplate.BeamDirection.X * self.BeamLength * modelScale, x, z)
+				elseif modelTemplate.BeamDirection.Y then
+					position = Vector3.new(x, modelTemplate.BeamDirection.Y * self.BeamLength * modelScale, z)
+				else
+					position = Vector3.new(x, z, modelTemplate.BeamDirection.Z * self.BeamLength * modelScale)
+				end
+				endAttachment.Name = `GAttachment{i}`
+				endAttachment.Position = position
+				if modelTemplate.GoboAttachmentOrientation then
+					endAttachment.Orientation = modelTemplate.GoboAttachmentOrientation
+				end
+				endAttachment.Parent = lens
+				beam.Name = `Gobo{i}`
+				beam.Width0 = modelTemplate.GoboBeamWidth0 * modelScale
+				beam.Width1 = modelTemplate.GoboBeamWidth1 * modelScale
+				beam.TextureMode = modelTemplate.GoboBeamTextureMode or Enum.TextureMode.Stretch
+				beam.Attachment0 = baseAttachment
+				beam.Attachment1 = endAttachment
+
+				if modelTemplate.GoboBeamTexture then
+					beam.Texture = modelTemplate.GoboBeamTexture
+				end
+
+				beam.Parent = lens
+			end
+		end
+	end
+
+	if self.CanHavePhysicsElements then
+		for _, id in self.Indexer.Motors.All do
+			local model = self.Indexer.Motors._IDToModel[id]
+			local modelScale = if model:IsA("Model") then model:GetScale() else 1
+
+			if modelTemplate.HasTiltMotor then
+				self.State.Tilt[id] = model:GetAttribute("Tilt") or self.Settings.StartTilt or 0
+			end
+			if modelTemplate.HasPanMotor then
+				self.State.Pan[id] = model:GetAttribute("Pan") or self.Settings.StartPan or 0
+			end
+
+			local motorsFolder
+			if model:FindFirstChild("Motors") then
+				motorsFolder = model:FindFirstChild("Motors")
+			else
+				motorsFolder = Instance.new("Folder")
+				motorsFolder.Name = "Motors"
+				motorsFolder.Parent = model
+			end
+
+			local function addMotor(name, part0, part1, c0, c1)
+				if motorsFolder:FindFirstChild(name) then
+					return
+				end
+				local motor = Instance.new("Motor6D")
+				motor.Name = name
+				motor.Part0 = part0
+				motor.Part1 = part1
+				motor.C0 = CFrame.new(c0.Position * modelScale) * CFrame.fromOrientation(c0:ToOrientation())
+				motor.C1 = CFrame.new(c1.Position * modelScale) * CFrame.fromOrientation(c1:ToOrientation())
+				if motor.Name == "Gobo" then
+					motor.MaxVelocity = 0
+					motor.DesiredAngle = math.huge
+				else
+					motor.MaxVelocity = DEFAULT_MOTOR_SPEED
+				end
+				motor.Parent = motorsFolder
+			end
+			local function addWeld(part0, part1)
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = part0
+				weld.Part1 = part1
+				weld.Parent = motorsFolder
+			end
+			local function unanchor(part)
+				part.Anchored = false
+			end
+			modelTemplate.AddMotors(model, addMotor, addWeld, unanchor)
+		end
+	end
+
+	if self.RunPhysics then
+		for _, id in self.Indexer.Motors.All do
+			self.TiltMotors[id] = self.Indexer.Motors._IDToModel[id].Motors.Tilt
+			self:ApplySingleLightState(id)
+		end
+	end
+end
+
+function Changer:_SetCueSettings()
+	for cueName, cueModule in Changer._CueModules do
+		if not cueModule.Settings then
+			continue
+		end
+		self.State.CueSettings[cueName] = deepCopy(cueModule.Settings)
+	end
+end
+
+function Changer:ApplySingleLightState(id)
+	if self.TiltMotors[id] and self.State.Tilt[id] then
+		self.TiltMotors[id].MaxVelocity = self.State.MotorSpeed
+		self:CueTilt(self.State.Tilt[id], { id })
+	end
+	if self.PanMotors[id] and self.State.Pan[id] then
+		self.PanMotors[id].MaxVelocity = self.State.MotorSpeed
+		self:CuePan(self.State.Pan[id], { id })
+	end
+	if self.GoboMotors[id] and self.State.GoboDirection and self.State.GoboDirection[tostring(id)] ~= nil then
+		self:RotateGobo(if self.State.GoboDirection[tostring(id)] == true then 1 else -1, { id })
+	end
+end
+
+function Changer:ApplySingleLensState(id)
+	if self.State.Color[id] then
+		self:Color(self.State.Color[id], { id })
+	end
+	if self.State.Enabled[id] then
+		self:On({ id })
+	else
+		self:Off({ id })
+	end
+	if self.Lights[id] then
+		self.Lights[id].ChangeDimness(self.State.Dimness)
+		if self.Lights[id].ChangeBeamVisibility then
+			self.Lights[id].ChangeBeamVisibility(self.State.BeamMode == "Beam", self.State.BeamMode == "Gobo")
+			if self.CanHaveBeamElements then
+				self.Lights[id].ChangeBeamThickness(self.State.BeamThickness * self.ModelTemplate.BeamWidth1)
+				self.Lights[id].ChangeBeamThicknessMultiplier(self.State.BeamThicknessMultiplier)
+				self.Lights[id].ChangeTextureLength(self.State.TextureLength)
+			end
+		end
+	end
+	if self.GoboAttachments[id] then
+		local spread = self.State.GoboSpread * self.ModelTemplate.GoboSpread
+		local modelScale = self.Indexer.ModelScales[self.Indexer.LensIDToModelID[id]] or 1
+		for i, attachment in self.GoboAttachments[id] do
+			-- TODO: this is repeated 3 times in this script
+			local progress = math.rad(i * (360 / 8))
+			local x = math.sin(progress) * spread * modelScale
+			local z = math.cos(progress) * spread * modelScale
+
+			local position
+			-- TODO: this is terrible
+			if self.ModelTemplate.BeamDirection.X then
+				position = Vector3.new(self.ModelTemplate.BeamDirection.X * self.BeamLength * modelScale, x, z)
+			elseif self.ModelTemplate.BeamDirection.Y then
+				position = Vector3.new(x, self.ModelTemplate.BeamDirection.Y * self.BeamLength * modelScale, z)
+			else
+				position = Vector3.new(x, z, self.ModelTemplate.BeamDirection.Z * self.BeamLength * modelScale)
+			end
+			attachment.Position = position
+		end
+	end
+end
+
+function Changer:ApplyGenericState()
+	for cueName, settings in self.State.ActiveCues do
+		self:Cue(cueName, true, settings)
+	end
+	if self.RunPhysics then
+		for cueName, _ in self.State.ActivePhysicsCues do
+			self:Cue(cueName, true)
+		end
+	end
+end
+
+function Changer:Reset(dontFireEvents)
+	if not dontFireEvents then
+		self.Events.ResetBegan:Fire()
+	end
+	for cueName, _ in self.State.ActiveCues do
+		self:Cue(cueName, false)
+	end
+	for cueName, _ in self.State.ActivePhysicsCues do
+		self:Cue(cueName, false)
+	end
+	self.CueDoneForceFade = self.FadeReset
+	if self.FadeReset then
+		self:FadeOff()
+	else
+		self:Off()
+	end
+	if not dontFireEvents then
+		self.Events.ResetEnded:Fire()
+	end
+end
+
+function Changer:HardReset()
+	self.Events.HardResetBegan:Fire()
+	self:Reset(true)
+	self:Color(DEFAULT_COLOR)
+	self:SmoothColor(false)
+	self:LoopCues(true)
+	self:AnimatedGradients(false)
+	self:CueSpeed(1)
+	self:FadeSpeed(1)
+	self:SetLensGroup("Default")
+	self:Dimness(1)
+	if self.ModelTemplate.HasTiltMotor then
+		self:Tilt(self.Settings.StartTilt or 0)
+	end
+	if self.ModelTemplate.HasPanMotor then
+		self:Pan(self.Settings.StartPan or 0)
+	end
+	if self.ModelTemplate.CanHaveGobo then
+		self:RotateGobo(0)
+		self:GoboSpread(1)
+	end
+	if self.ModelTemplate.CanFollow then
+		self:Follow(nil)
+	end
+	if self.ModelTemplate.CanHaveBeam then
+		self:BeamThickness(1)
+	end
+	self:BeamMode(self.ModelTemplate.DefaultBeamMode or "NoBeam")
+	self:MotorSpeed(DEFAULT_MOTOR_SPEED)
+	for settingName, settingValue in DEFAULT_GLOBAL_CUE_SETTINGS do
+		self:SetGlobalCueSetting(settingName, settingValue)
+	end
+	for cueName, cueSettings in self.State.CueSettings do
+		for settingName, _ in cueSettings do
+			self:SetCueSetting(cueName, settingName, Changer._CueModules[cueName].Settings[settingName])
+		end
+	end
+	self.Events.HardResetEnded:Fire()
+end
+
+function Changer:ResetOnOffState(fixtureIds, fade)
+	local on = {}
+	local off = {}
+	for _, id in fixtureIds do
+		if self.State.Enabled[id] then
+			table.insert(on, id)
+		else
+			table.insert(off, id)
+		end
+	end
+	if fade then
+		self:CueFadeOn(on)
+		self:CueFadeOff(off)
+	else
+		self:CueOn(on)
+		self:CueOff(off)
+	end
+end
+
+function Changer:ResetTiltState(fixtureIds)
+	for _, id in fixtureIds do
+		self:CueTilt(self.State.Tilt[id], { id })
+	end
+end
+
+function Changer:ResetPanState(fixtureIds)
+	for _, id in fixtureIds do
+		self:CuePan(self.State.Pan[id], { id })
+	end
+end
+
+local function stringifyColorSequence(colorSequence: ColorSequence)
+	local s = ""
+	for i, keypoint in colorSequence.Keypoints do
+		s = s .. `{keypoint.Time},{keypoint.Value}`
+		if i ~= #colorSequence.Keypoints then
+			s = s .. ";"
+		end
+	end
+	return s
+end
+
+function Changer:ResetColorState(fixtureIds, smoothColorOverride)
+	local colors = {}
+	local ref = {}
+	for _, id in fixtureIds do
+		local color = self.State.Color[id]
+		local hex = ""
+		if typeof(color) == "Color3" then
+			hex = `C{color:ToHex()}`
+		else
+			hex = `S{stringifyColorSequence(color)}`
+			ref[hex] = color
+		end
+		if not colors[hex] then
+			colors[hex] = {}
+		end
+		table.insert(colors[hex], id)
+	end
+	for colorHex, ids in colors do
+		local colorType = string.sub(colorHex, 1, 1)
+		local colorString = string.sub(colorHex, 2)
+		local color = if colorType == "C" then Color3.fromHex(colorString) else ref[colorHex]
+		self:CueColor(color, ids, smoothColorOverride)
+	end
+end
+
+function Changer:_Fire(eventName, ...)
+	self.Events[eventName]:Fire(...)
+end
+
+function Changer:CueOn(fixtureIds)
+	local thisTime = os.clock()
+	for _, id in fixtureIds do
+		self.FadeTimestamps[id] = thisTime
+		if self.Lights[id] then
+			self.Lights[id].ChangeBrightness(1)
+		end
+	end
+end
+
+function Changer:MarkOn(fixtureIds)
+	for _, id in fixtureIds do
+		self.State.Enabled[id] = true
+	end
+end
+
+function Changer:On(selector)
+	local fixtureIds = self.Indexer:Get(selector)
+	self:MarkOn(fixtureIds)
+	self:_Fire("TurnedOn", selector)
+	if self.SendToClient then
+		return events.on:FireAllClients(self.ID, selector)
+	end
+	return self:CueOn(fixtureIds)
+end
+
+function Changer:CueFadeOn(fixtureIds)
+	local startTime = os.clock()
+	local fadeTime = self.Settings.FadeTime / self.State.FadeSpeed
+	local waitTime = 1 / self.Settings.FadeFPS
+	local lights = self.Lights
+	local timestamps = self.FadeTimestamps
+	local startBrightnesses = {}
+
+	for _, id in fixtureIds do
+		timestamps[id] = startTime
+		local light = lights[id]
+		if light then
+			startBrightnesses[id] = light.GetBrightness()
+		end
+	end
+
+	task.defer(function()
+		while task.wait(waitTime) do
+			local currentProgress = (os.clock() - startTime) / fadeTime
+			if currentProgress > 1 then
+				for _, id in fixtureIds do
+					if lights[id] and timestamps[id] == startTime then
+						lights[id].ChangeBrightness(1)
+					end
+				end
+				break
+			end
+			for _, id in fixtureIds do
+				if lights[id] and timestamps[id] == startTime then
+					debug.profilebegin("gmath")
+					lights[id].ChangeBrightness(startBrightnesses[id] + currentProgress * (1 - startBrightnesses[id]))
+				end
+			end
+		end
+	end)
+end
+
+function Changer:FadeOn(selector)
+	local fixtureIds = self.Indexer:Get(selector)
+	self:MarkOn(fixtureIds)
+	self:_Fire("FadedOn", selector)
+	if self.SendToClient then
+		return events.fadeon:FireAllClients(self.ID, selector)
+	end
+	return self:CueFadeOn(fixtureIds)
+end
+
+function Changer:CueFadeOff(fixtureIds)
+	local startTime = os.clock()
+	local fadeTime = self.Settings.FadeTime / self.State.FadeSpeed
+	local waitTime = 1 / self.Settings.FadeFPS
+	local lights = self.Lights
+	local timestamps = self.FadeTimestamps
+	local startBrightnesses = {}
+
+	for _, id in fixtureIds do
+		timestamps[id] = startTime
+		local light = lights[id]
+		if light then
+			startBrightnesses[id] = light.GetBrightness()
+		end
+	end
+
+	task.defer(function()
+		while task.wait(waitTime) do
+			local currentProgress = (os.clock() - startTime) / fadeTime
+			if currentProgress > 1 then
+				for _, id in fixtureIds do
+					if lights[id] and timestamps[id] == startTime then
+						lights[id].ChangeBrightness(0)
+					end
+				end
+				break
+			end
+			local newProgress = 1 - currentProgress
+			for _, id in fixtureIds do
+				if lights[id] and timestamps[id] == startTime then
+					lights[id].ChangeBrightness(0 + newProgress * (startBrightnesses[id] - 0))
+				end
+			end
+		end
+	end)
+end
+
+function Changer:MarkOff(fixtureIds)
+	for _, id in fixtureIds do
+		self.State.Enabled[id] = false
+	end
+end
+
+function Changer:FadeOff(selector)
+	local fixtureIds = self.Indexer:Get(selector)
+	self:MarkOff(fixtureIds)
+	self:_Fire("FadedOff", selector)
+	if self.SendToClient then
+		return events.fadeoff:FireAllClients(self.ID, selector)
+	end
+	return self:CueFadeOff(fixtureIds)
+end
+
+function Changer:CueOff(fixtureIds)
+	local thisTime = os.clock()
+	for _, id in fixtureIds do
+		self.FadeTimestamps[id] = thisTime
+		if self.Lights[id] then
+			self.Lights[id].ChangeBrightness(0)
+		end
+	end
+end
+
+function Changer:Off(selector)
+	local fixtureIds = self.Indexer:Get(selector)
+	self:MarkOff(fixtureIds)
+	self:_Fire("TurnedOff", selector)
+	if self.SendToClient then
+		return events.off:FireAllClients(self.ID, selector)
+	end
+	return self:CueOff(fixtureIds)
+end
+
+function Changer:_RunColorLerp(fixtureIds, startTime, goalColor)
+	local fadeTime = self.Settings.FadeTime * self.State.GradientSpeed
+	local waitTime = 1 / self.Settings.FadeFPS
+	local lights = self.Lights
+	local timestamps = self.ColorTimestamps
+	local startColors = {}
+
+	for _, id in fixtureIds do
+		timestamps[id] = startTime
+		local light = lights[id]
+		if light then
+			startColors[id] = lights[id].GetColor()
+		end
+	end
+
+	while task.wait(waitTime) do
+		local currentProgress = (os.clock() - startTime) / fadeTime
+		if currentProgress > 1 then
+			for _, id in fixtureIds do
+				if lights[id] and timestamps[id] == startTime then
+					lights[id].ChangeColor(goalColor)
+				end
+			end
+			break
+		end
+		for _, id in fixtureIds do
+			if lights[id] and timestamps[id] == startTime then
+				lights[id].ChangeColor(startColors[id]:Lerp(goalColor, currentProgress))
+			end
+		end
+	end
+end
+
+function Changer:MarkColor(color, fixtureIds)
+	for _, id in fixtureIds do
+		self.State.Color[id] = color
+	end
+end
+
+function Changer:CueColor(color, fixtureIds, smoothColorOverride)
+	local startTime = os.clock()
+	if typeof(color) == "ColorSequence" then
+		local groups = self.Indexer:Number(fixtureIds)
+		if self.State.AnimatedGradients then
+			local keypoints = {}
+			local firstColor
+			for _, keypoint in color.Keypoints do
+				table.insert(keypoints, ColorSequenceKeypoint.new(keypoint.Time * 0.95, keypoint.Value))
+				if keypoint.Time == 0 then
+					firstColor = keypoint.Value
+				end
+			end
+			table.insert(keypoints, ColorSequenceKeypoint.new(1, firstColor))
+			color = ColorSequence.new(keypoints)
+
+			local isStillInUse = true
+			local timestamps = self.ColorTimestamps
+			for _, id in fixtureIds do
+				timestamps[id] = startTime
+			end
+			local fadeWaitTime = 1 / self.Settings.FadeFPS
+			local lastTime = os.clock()
+			local previousFadeSpeed = self.State.GradientSpeed
+
+			task.spawn(function()
+				while isStillInUse do
+					local currentFadeSpeed = self.State.GradientSpeed
+					local timeItTakesToGoThroughTheEntireGradient = 2 * currentFadeSpeed
+					isStillInUse = false
+					local thisTime = os.clock()
+
+					if previousFadeSpeed ~= currentFadeSpeed then
+						local timeItTookPreviouslyToGoThroughTheEntireGradient = 2 * previousFadeSpeed
+						local previousProgress =
+							Map(thisTime, lastTime, lastTime + timeItTookPreviouslyToGoThroughTheEntireGradient, 0, 1)
+						local currentProgress =
+							Map(thisTime, lastTime, lastTime + timeItTakesToGoThroughTheEntireGradient, 0, 1)
+						local progressChange = currentProgress - previousProgress
+						lastTime += progressChange * timeItTakesToGoThroughTheEntireGradient
+						previousFadeSpeed = currentFadeSpeed
+					end
+
+					if thisTime >= timeItTakesToGoThroughTheEntireGradient + lastTime then
+						lastTime = thisTime
+					end
+
+					local gradientOffset =
+						Map(thisTime, lastTime, lastTime + timeItTakesToGoThroughTheEntireGradient, 0, 1)
+
+					for group, ids in groups do
+						local gradientProgress = (group - 1) / (#groups - 1) - gradientOffset
+						if gradientProgress < 0 then
+							gradientProgress += 1
+						end
+
+						local c
+						for i, keypoint: ColorSequenceKeypoint in color.Keypoints do
+							if keypoint.Time == gradientProgress then
+								c = keypoint.Value
+								break
+							elseif keypoint.Time >= gradientProgress then
+								c = color.Keypoints[i - 1].Value:Lerp(
+									keypoint.Value,
+									Map(gradientProgress, color.Keypoints[i - 1].Time, keypoint.Time, 0, 1)
+								)
+								break
+							end
+						end
+
+						for _, id in ids do
+							if self.Lights[id] and timestamps[id] == startTime then
+								isStillInUse = true
+								self.Lights[id].ChangeColor(c)
+							end
+						end
+					end
+
+					local isSmoothColor = if smoothColorOverride ~= nil
+						then smoothColorOverride
+						else self.State.SmoothColor
+					task.wait(if isSmoothColor then fadeWaitTime else 0.2 * self.State.GradientSpeed)
+				end
+			end)
+		else
+			for group, ids in groups do
+				local gradientProgress = (group - 1) / (#groups - 1)
+				local c
+				for i, keypoint: ColorSequenceKeypoint in color.Keypoints do
+					if keypoint.Time == gradientProgress then
+						c = keypoint.Value
+						break
+					elseif keypoint.Time >= gradientProgress then
+						c = color.Keypoints[i - 1].Value:Lerp(
+							keypoint.Value,
+							Map(gradientProgress, color.Keypoints[i - 1].Time, keypoint.Time, 0, 1)
+						)
+						break
+					end
+				end
+				local isSmoothColor = if smoothColorOverride ~= nil then smoothColorOverride else self.State.SmoothColor
+				if isSmoothColor then
+					task.spawn(self._RunColorLerp, self, ids, startTime, c)
+				else
+					for _, id in ids do
+						self.ColorTimestamps[id] = startTime
+						if self.Lights[id] then
+							self.Lights[id].ChangeColor(c)
+						end
+					end
+				end
+			end
+		end
+	else
+		local isSmoothColor = if smoothColorOverride ~= nil then smoothColorOverride else self.State.SmoothColor
+		if isSmoothColor then
+			task.spawn(self._RunColorLerp, self, fixtureIds, startTime, color)
+		else
+			for _, id in fixtureIds do
+				self.ColorTimestamps[id] = startTime
+				if self.Lights[id] then
+					self.Lights[id].ChangeColor(color)
+				end
+			end
+		end
+	end
+end
+
+function Changer:Color(color, selector, smoothColorOverride)
+	local fixtureIds = self.Indexer:Get(selector)
+	self:MarkColor(color, fixtureIds)
+	self:_Fire("ColorChanged", color, selector, smoothColorOverride)
+	if self.SendToClient then
+		return events.color:FireAllClients(self.ID, color, selector, smoothColorOverride)
+	end
+	return self:CueColor(color, fixtureIds, smoothColorOverride)
+end
+
+function Changer:CueSpeed(multiplier)
+	self.State.CueSpeed = 1 / multiplier
+	if string.lower(self.Settings.GradientSpeed or "") == "cuespeed" then
+		self.State.GradientSpeed = 1 / multiplier
+	end
+	self:_Fire("CueSpeedChanged", multiplier)
+	if self.SendToClient then
+		return events.setcuespeedmultiplier:FireAllClients(self.ID, multiplier)
+	end
+	return
+end
+
+function Changer:FadeSpeed(multiplier)
+	self.State.FadeSpeed = multiplier
+	if string.lower(self.Settings.GradientSpeed or "") ~= "cuespeed" then
+		self.State.GradientSpeed = 1 / multiplier
+	end
+	self:_Fire("FadeSpeedChanged", multiplier)
+	if self.SendToClient then
+		return events.setfadespeedmultiplier:FireAllClients(self.ID, multiplier)
+	end
+	return
+end
+
+function Changer:LoopCues(modifierValue)
+	self.State.LoopCues = modifierValue
+	self:_Fire("LoopCuesChanged", modifierValue)
+	if self.SendToClient then
+		return events.setloopcuesmodifier:FireAllClients(self.ID, modifierValue)
+	end
+	return
+end
+
+function Changer:SmoothColor(modifierValue)
+	self.State.SmoothColor = modifierValue
+	self:_Fire("SmoothColorChanged", modifierValue)
+	if self.SendToClient then
+		return events.setsmoothcolormodifier:FireAllClients(self.ID, modifierValue)
+	end
+	return
+end
+
+function Changer:AnimatedGradients(modifierValue)
+	self.State.AnimatedGradients = modifierValue
+	self:_Fire("AnimatedGradientsChanged", modifierValue)
+	if self.SendToClient then
+		return events.setanimatedgradientsmodifier:FireAllClients(self.ID, modifierValue)
+	end
+	return self:ResetColorState(self.Indexer:Get())
+end
+
+function Changer:Dimness(dimness)
+	self.State.Dimness = dimness
+	self:_Fire("DimnessChanged", dimness)
+	if self.SendToClient then
+		return events.setdimness:FireAllClients(self.ID, dimness)
+	end
+	for _, light in self.Lights do
+		light.ChangeDimness(dimness)
+	end
+	return
+end
+
+function Changer:BeamMode(newBeamMode)
+	if
+		(newBeamMode == "Beam" and not self.CanHaveBeamElements)
+		or (newBeamMode == "Gobo" and not self.CanHaveGoboElements)
+	then
+		return
+	end
+	self.State.BeamMode = newBeamMode
+	self:_Fire("BeamModeChanged", newBeamMode)
+	if self.SendToClient then
+		return events.setbeammode:FireAllClients(self.ID, newBeamMode)
+	end
+	for _, light in self.Lights do
+		light.ChangeBeamVisibility(newBeamMode == "Beam", newBeamMode == "Gobo")
+	end
+	return
+end
+
+function Changer:BeamThickness(thicknessPercentage)
+	if not self.CanHaveBeamElements then
+		return
+	end
+	self.State.BeamThickness = thicknessPercentage
+	self:_Fire("BeamThicknessChanged", thicknessPercentage)
+	if self.SendToClient then
+		return events.setbeamthickness:FireAllClients(self.ID, thicknessPercentage)
+	end
+	local thickness = self.ModelTemplate.BeamWidth1 * thicknessPercentage
+	for _, light in self.Lights do
+		light.ChangeBeamThickness(thickness)
+	end
+	return
+end
+
+function Changer:GoboSpread(spreadPercentage)
+	if not self.CanHaveGoboElements then
+		return
+	end
+	self.State.GoboSpread = spreadPercentage
+	self:_Fire("GoboSpreadChanged", spreadPercentage)
+	if self.SendToClient then
+		return events.gobospread:FireAllClients(self.ID, spreadPercentage)
+	end
+	local spread = self.ModelTemplate.GoboSpread * spreadPercentage
+	for id, light in self.GoboAttachments do
+		local modelScale = self.Indexer.ModelScales[self.Indexer.LensIDToModelID[id]] or 1
+		for i, attachment in light do
+			local progress = math.rad(i * (360 / 8))
+			local x = math.sin(progress) * spread * modelScale
+			local z = math.cos(progress) * spread * modelScale
+
+			local position
+			-- TODO: this is terrible
+			if self.ModelTemplate.BeamDirection.X then
+				position = Vector3.new(self.ModelTemplate.BeamDirection.X * self.BeamLength * modelScale, x, z)
+			elseif self.ModelTemplate.BeamDirection.Y then
+				position = Vector3.new(x, self.ModelTemplate.BeamDirection.Y * self.BeamLength * modelScale, z)
+			else
+				position = Vector3.new(x, z, self.ModelTemplate.BeamDirection.Z * self.BeamLength * modelScale)
+			end
+			attachment.Position = position
+		end
+	end
+	return
+end
+
+function Changer:MotorSpeed(motorSpeed)
+	if not self.CanHavePhysicsElements then
+		return
+	end
+
+	self.State.MotorSpeed = motorSpeed
+	self:_Fire("MotorSpeedChanged", motorSpeed)
+	if self.SendPhysicsToClient then
+		return events.setmotorspeed:FireAllClients(self.ID, motorSpeed)
+	end
+	for _, id in self.Indexer.Motors.All do
+		if self.TiltMotors[id] then
+			self.TiltMotors[id].MaxVelocity = motorSpeed
+		end
+		if self.PanMotors[id] then
+			self.PanMotors[id].MaxVelocity = motorSpeed
+		end
+		if self.GoboMotors[id] and self.State.GoboDirection[tostring(id)] ~= nil then
+			self.GoboMotors[id].MaxVelocity = motorSpeed
+		end
+	end
+	return
+end
+
+function Changer:Cue(cueName, enabled, _forceSettings)
+	local module = Changer._CueModules[cueName]
+	local isPhysicsCue = module.IsPhysicsCue
+
+	if isPhysicsCue and not self.CanHavePhysicsElements then
+		return
+	end
+
+	self.CueDoneForceFade = false
+	local settings = _forceSettings or {
+		lensGroup = self:GetLensGroup(),
+	}
+
+	if self.State.LoopCues then
+		local tbl = if isPhysicsCue then self.State.ActivePhysicsCues else self.State.ActiveCues
+		tbl[cueName] = if enabled then settings else nil
+	end
+
+	self:_Fire(if enabled then "CueActivated" else "CueDeactivated", cueName, enabled)
+
+	local sendToClientCheck = if module.IsPhysicsCue then self.SendPhysicsToClient else self.SendToClient
+	if sendToClientCheck then
+		if not enabled and module.OnDisable then
+			if module.OnDisable == "Off" or module.OnDisable == "FadeOff" then
+				self:MarkOff(self.Indexer:Get())
+			end
+		end
+		return events.cue:FireAllClients(self.ID, cueName, enabled)
+	end
+	if enabled then
+		task.spawn(function()
+			if not self.CueFunctions[cueName] then
+				local disableFunction = module.Enable(
+					self,
+					self.Settings,
+					not self.State.LoopCues,
+					cueName,
+					self.State.GlobalCueSettings,
+					self.State.CueSettings[cueName],
+					settings
+				)
+				if self.State.LoopCues then
+					self.CueFunctions[cueName] = disableFunction
+				end
+			end
+		end)
+	else
+		if self.CueFunctions[cueName] then
+			task.spawn(function()
+				self.CueFunctions[cueName]()
+				if self.State.GlobalCueSettings.KillCues then
+					self:CueDone(cueName)
+				end
+			end)
+			self.CueFunctions[cueName] = nil
+		end
+	end
+	return
+end
+
+function Changer:CueDone(cueName)
+	local module = Changer._CueModules[cueName]
+	if module.OnDisable then
+		if module.OnDisable == "FadeOff" or (module.OnDisable == "Off" and self.CueDoneForceFade) then
+			self:FadeOff()
+		elseif module.OnDisable == "Off" then
+			self:Off()
+		elseif module.OnDisable == "ResetColor" then
+			self:ResetColorState(self.Indexer:Get())
+		elseif module.OnDisable == "ResetTilt" then
+			self:ResetTiltState(self.Indexer.Motors.All)
+		elseif module.OnDisable == "ResetPan" then
+			self:ResetPanState(self.Indexer.Motors.All)
+		elseif module.OnDisable == "ResetMotors" then
+			self:ResetTiltState(self.Indexer.Motors.All)
+			self:ResetPanState(self.Indexer.Motors.All)
+		elseif
+			module.OnDisable == "FadeResetOnOff" or (module.OnDisable == "FadeResetOnOff" and self.CueDoneForceFade)
+		then
+			self:ResetOnOffState(self.Indexer:Get(), true)
+		elseif module.OnDisable == "ResetOnOff" then
+			self:ResetOnOffState(self.Indexer:Get(), false)
+		end
+	end
+end
+
+function Changer:Action(actionName, ...)
+	local action = Changer._ActionModules[actionName]
+	if action.IsPhysicsAction and not self.CanHavePhysicsElements then
+		return
+	end
+
+	self:_Fire("ActionRan", actionName, ...)
+
+	local settings = {
+		lensGroup = self:GetLensGroup(),
+	}
+
+	local sendToClientCheck = if action.IsPhysicsAction then self.SendPhysicsToClient else self.SendToClient
+	if sendToClientCheck and not action.ServerSide then
+		action.Server(self, self.Settings, self.State.GlobalCueSettings, settings, ...)
+		return events.action:FireAllClients(self.ID, actionName, ...)
+	end
+	return task.spawn(action.Client, self, self.Settings, self.State.GlobalCueSettings, settings, ...)
+end
+
+function Changer:MarkTilt(tilt, fixtureIds)
+	for _, id in fixtureIds do
+		self.State.Tilt[id] = tilt
+	end
+end
+
+function Changer:CueTilt(tilt, fixtureIds)
+	local rad = math.rad(tilt)
+	for _, id in fixtureIds do
+		if self.TiltMotors[id] then
+			self.TiltMotors[id].DesiredAngle = rad
+		end
+	end
+end
+
+function Changer:Tilt(tilt, selector)
+	if not self.CanHavePhysicsElements then
+		return
+	end
+	local fixtureIds = self.Indexer:GetMotors(selector)
+	self:MarkTilt(tilt, fixtureIds)
+	self:_Fire("TiltChanged", tilt, selector)
+	if self.SendPhysicsToClient then
+		return events.tilt:FireAllClients(self.ID, tilt, selector)
+	end
+	return self:CueTilt(tilt, fixtureIds)
+end
+
+function Changer:MarkPan(pan, fixtureIds)
+	for _, id in fixtureIds do
+		self.State.Pan[id] = pan
+	end
+end
+
+function Changer:CuePan(pan, fixtureIds)
+	local rad = math.rad(pan)
+	local invertedRad = math.rad(-pan)
+	for _, id in fixtureIds do
+		if self.PanMotors[id] then
+			self.PanMotors[id].DesiredAngle = if self.Indexer.InvertPan[id] then invertedRad else rad
+		end
+	end
+end
+
+function Changer:Pan(pan, selector)
+	if not self.CanHavePhysicsElements then
+		return
+	end
+	local fixtureIds = self.Indexer:GetMotors(selector)
+	self:MarkPan(pan, fixtureIds)
+	self:_Fire("PanChanged", pan, selector)
+	if self.SendPhysicsToClient then
+		return events.pan:FireAllClients(self.ID, pan, selector)
+	end
+	return self:CuePan(pan, fixtureIds)
+end
+
+function Changer:RotateGobo(direction, selector)
+	if not self.CanHaveGoboElements then
+		return
+	end
+	local fixtureIds = self.Indexer:GetMotors(selector)
+	for _, id in fixtureIds do
+		self.State.GoboDirection[tostring(id)] = if direction == 1 then true elseif direction == -1 then false else nil
+	end
+	self:_Fire("RotateGoboChanged", direction, selector)
+	if self.SendPhysicsToClient then
+		return events.goborotate:FireAllClients(self.ID, direction, selector)
+	end
+	for _, id in fixtureIds do
+		local motor = self.GoboMotors[id]
+		if motor then
+			motor.DesiredAngle = if direction == 1 then math.huge elseif direction == -1 then -math.huge else 0
+			motor.MaxVelocity = if direction == 1 or direction == -1 then self.State.MotorSpeed else 0
+		end
+	end
+	return
+end
+
+function Changer:SetCueSetting(cueName, settingName, value)
+	self.State.CueSettings[cueName][settingName] = value
+	self:_Fire("CueSettingChanged", cueName, settingName, value)
+	if self.SendToClient then
+		return events.setcuesetting:FireAllClients(self.ID, cueName, settingName, value)
+	end
+	return
+end
+
+function Changer:SetGlobalCueSetting(settingName, value)
+	if PHYSICS_BASED_CUE_SETTINGS[settingName] and not self.CanHavePhysicsElements then
+		return
+	end
+	self.State.GlobalCueSettings[settingName] = value
+	self:_Fire("GlobalCueSettingChanged", settingName, value)
+	if self.SendToClient then
+		return events.setglobalcuesetting:FireAllClients(self.ID, settingName, value)
+	end
+	return
+end
+
+function Changer:DoFollow(position: Vector3?)
+	if position then
+		local modelTemplate = self.ModelTemplate
+		for _, id in self.Indexer.Motors.All do
+			local tiltMotor = self.TiltMotors[id]
+			local panMotor = self.PanMotors[id]
+			if not tiltMotor or not panMotor or not panMotor.Part0 or not tiltMotor.Part1 then
+				continue
+			end
+
+			local zeroDegreesCFrame = panMotor.Part0.CFrame
+				* CFrame.new(0, (tiltMotor.Part1.Position - panMotor.Part0.Position).Magnitude, 0)
+			local originalrx, originalry, originalrz = zeroDegreesCFrame:ToOrientation()
+			local lookAtCFrame = CFrame.lookAt(zeroDegreesCFrame.Position, position)
+			local rx, ry, rz = lookAtCFrame:ToOrientation()
+			local panLookAtCFrame = CFrame.new(zeroDegreesCFrame.Position) * CFrame.fromOrientation(originalrx, ry, rz)
+			local tiltLookAtCFrame = CFrame.new(zeroDegreesCFrame.Position)
+				* CFrame.fromOrientation(rx, originalry, originalrz)
+
+			local zeroDegreesCFrameUpVector = zeroDegreesCFrame.UpVector
+			local zeroDegreesCFrameLookVector = zeroDegreesCFrame.LookVector
+			local zeroDegreesCFrameRightVector = zeroDegreesCFrame.RightVector
+			local panLookAtLookVector = panLookAtCFrame.LookVector
+			local tiltLookAtLookVector = tiltLookAtCFrame.LookVector
+
+			local currentPan = panMotor.CurrentAngle
+			local dot = panLookAtLookVector:Dot(zeroDegreesCFrameRightVector)
+			local sign = math.sign(dot)
+
+			local panAngle = zeroDegreesCFrameLookVector:Angle(panLookAtLookVector) * sign
+			local tiltAngle = zeroDegreesCFrameUpVector:Angle(tiltLookAtLookVector)
+
+			local _, lens = next(self.Lenses[id])
+			local distance = (lens.Position - position).Magnitude
+			local lightSource = lens:FindFirstChild("Light"):FindFirstChild("Light")
+			local lightOffset = if lightSource and lightSource:IsA("PointLight") then 2 else 50
+			local lightDistance = math.max(distance - lightOffset, 0)
+			local beamLength = if modelTemplate.LimitBeamLength
+				then math.min(distance, modelTemplate.BeamLength)
+				else distance
+			local rotations = self.FollowRotations
+
+			local angleDifference = (currentPan - panAngle) - rotations[id] * math.pi * 2
+			if angleDifference > math.pi then
+				rotations[id] += 1
+			elseif angleDifference < -math.pi then
+				rotations[id] -= 1
+			end
+
+			panAngle += rotations[id] * math.pi * 2
+
+			panMotor.DesiredAngle = panAngle
+			tiltMotor.DesiredAngle = tiltAngle
+
+			if self.LightAttachments[id] then
+				for _, attachment in self.LightAttachments[id] do
+					attachment.Position = modelTemplate.BeamDirection * lightDistance
+				end
+			end
+			if self.BeamAttachments[id] then
+				for _, attachment in self.BeamAttachments[id] do
+					attachment.Position = modelTemplate.BeamDirection * beamLength
+				end
+			end
+		end
+		--for _, id in self.Indexer.All do
+		--	if self.Lights[id] then
+		--		self.Lights[id].ChangeBeamThicknessMultiplier(modelTemplate.FollowBeamWidth)
+		--		self.Lights[id].ChangeTextureLength(modelTemplate.FollowTextureLength)
+		--	end
+		--end
+	else
+		local modelTemplate = self.ModelTemplate
+		self:ResetTiltState(self.Indexer:Get())
+		for _, id in self.Indexer.Motors.All do
+			if self.PanMotors[id] and self.FollowRotations[id] then
+				self.PanMotors[id].CurrentAngle -= self.FollowRotations[id] * math.pi * 2
+				self.FollowRotations[id] = 0
+			end
+			if self.LightAttachments[id] then
+				for lensId, attachment in self.LightAttachments[id] do
+					attachment.Position = self.LightAttachmentOffsets[lensId] or Vector3.zero
+				end
+			end
+			if self.BeamAttachments[id] then
+				local modelScale = self.Indexer.ModelScales[id] or 1
+				for _, attachment in self.BeamAttachments[id] do
+					attachment.Position = modelTemplate.BeamDirection * self.BeamLength * modelScale
+				end
+			end
+		end
+		self:ResetPanState(self.Indexer:Get())
+	end
+end
+
+function Changer:_BeamThicknessMultiplier(multiplier)
+	self.State.BeamThicknessMultiplier = multiplier
+	if self.SendToClient then
+		return events.beamthicknessmultiplier:FireAllClients(self.ID, multiplier)
+	end
+	for _, id in self.Indexer:Get() do
+		if self.Lights[id] then
+			self.Lights[id].ChangeBeamThicknessMultiplier(multiplier)
+		end
+	end
+	return
+end
+
+function Changer:_TextureLength(length)
+	self.State.TextureLength = length
+	if self.SendToClient then
+		return events.texturelength:FireAllClients(self.ID, length)
+	end
+	for _, id in self.Indexer:Get() do
+		if self.Lights[id] then
+			self.Lights[id].ChangeTextureLength(length)
+		end
+	end
+	return
+end
+
+function Changer:Follow(part)
+	if not self.ModelTemplate.CanFollow then
+		return
+	end
+	self:_Fire("FollowChanged", part)
+	local timestamp = os.clock()
+	self.FollowTimestamp = timestamp
+	if part then
+		self:_BeamThicknessMultiplier(self.ModelTemplate.FollowBeamWidth)
+		self:_TextureLength(self.ModelTemplate.FollowTextureLength)
+		task.spawn(function()
+			while self.FollowTimestamp == timestamp do
+				local position = part.Position
+				if not part or not part:IsDescendantOf(workspace) then
+					self:Follow(nil)
+					break
+				end
+				if self.SendPhysicsToClient then
+					events.dofollow:FireAllClients(self.ID, position)
+				else
+					self:DoFollow(position)
+				end
+				task.wait(1 / workspace:GetRealPhysicsFPS())
+			end
+		end)
+	else
+		self:_BeamThicknessMultiplier(1)
+		self:_TextureLength(self.ModelTemplate.TextureLength or 0.99)
+		if self.SendPhysicsToClient then
+			return events.dofollow:FireAllClients(self.ID, nil)
+		else
+			self:DoFollow(nil)
+		end
+	end
+	return
+end
+
+function Changer:SetLensGroup(group: string)
+	self.Indexer.SelectedLensGroup = group
+	self.Events.LensGroupChanged:Fire(group)
+	if self.SendToClient then
+		return events.setlensgroups:FireAllClients(self.ID, group)
+	end
+	return
+end
+
+function Changer:GetLensGroup()
+	return self.Indexer.SelectedLensGroup
+end
+
+return Changer
